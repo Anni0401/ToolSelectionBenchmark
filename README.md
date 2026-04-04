@@ -4,7 +4,8 @@
 <p align="center">
     📖 <a>English</a> •
     <a href="README_ZH.md">中文</a> •
-    📚 <a href="https://openreview.net/forum?id=yz7fL5vfpn">ICLR 2026 Paper</a>
+    📚 <a href="https://openreview.net/forum?id=yz7fL5vfpn">ICLR 2026 Paper</a> •
+    🌐 <a href="https://yupeijei1997.github.io/WildToolBench/">Project Page</a>
 </p>
 
 
@@ -142,4 +143,19 @@ Continue Question User Agent Generate:
 User: Who is the uploader of the third wallpaper?
 
 Planner：getWaifuDetails(image_id=778899)
+```
+
+## 📝 Citation
+
+If you find WildToolBench useful in your research, please consider citing our paper:
+
+```bibtex
+@inproceedings{
+  yu2026wildtoolbench,
+  title={Benchmarking {LLM} Tool-Use in the Wild},
+  author={Peijie Yu and Wei Liu and Yifan Yang and Jinjian Li and Zelong Zhang and Xiao Feng and Feng Zhang},
+  booktitle={The Fourteenth International Conference on Learning Representations},
+  year={2026},
+  url={https://openreview.net/forum?id=yz7fL5vfpn}
+}
 ```

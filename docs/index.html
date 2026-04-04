@@ -675,20 +675,21 @@ function toggleLB(table, mode) {
 function renderTable(data, wrap, cols, sortKey) {
   // If sortKey provided, sort models within each category by that key descending
   if (sortKey) {
-    const sorted = [];
-    let currentCat = null;
-    let bucket = [];
+    const groups = [];
+    let group = null;
     data.forEach(d => {
-      if (d.cat) {
-        if (bucket.length) { bucket.sort((a, b) => (b[sortKey]||0) - (a[sortKey]||0)); sorted.push(...bucket); bucket = []; }
-        sorted.push(d);
-        currentCat = d;
-      } else {
-        bucket.push(d);
-      }
+      if (d.cat) { group = { cat: d.cat, items: [] }; groups.push(group); }
+      if (d.m && group) { const copy = Object.assign({}, d); delete copy.cat; group.items.push(copy); }
     });
-    if (bucket.length) { bucket.sort((a, b) => (b[sortKey]||0) - (a[sortKey]||0)); sorted.push(...bucket); }
-    data = sorted;
+    const finalData = [];
+    groups.forEach(g => {
+      g.items.sort((a, b) => (b[sortKey]||0) - (a[sortKey]||0));
+      g.items.forEach((item, i) => {
+        if (i === 0) item.cat = g.cat;
+        finalData.push(item);
+      });
+    });
+    data = finalData;
   }
 
   // Compute max values per numeric column per category
@@ -709,7 +710,7 @@ function renderTable(data, wrap, cols, sortKey) {
     numCols.forEach(c => {
       let mx = -Infinity;
       for (let i = cat.s; i < cat.e; i++) {
-        if (!data[i].cat && data[i][c.k] != null && data[i][c.k] > mx) mx = data[i][c.k];
+        if (data[i].m && data[i][c.k] != null && data[i][c.k] > mx) mx = data[i][c.k];
       }
       m[c.k] = mx;
     });
@@ -727,7 +728,8 @@ function renderTable(data, wrap, cols, sortKey) {
   let html = '<table><thead><tr>' + cols.map(c => `<th>${c.h}</th>`).join('') + '</tr></thead><tbody>';
   let rank = 0;
   data.forEach((d, di) => {
-    if (d.cat) { html += `<tr class="cat-header"><td colspan="${cols.length}">${d.cat}</td></tr>`; rank = 0; return; }
+    if (d.cat) { html += `<tr class="cat-header"><td colspan="${cols.length}">${d.cat}</td></tr>`; rank = 0; }
+    if (!d.m) return;
     rank++;
     const rc = rank <= 3 ? ' rank-' + rank : '';
     const tc = d.t === 'prop' ? 'type-prop' : d.t === 'open' ? 'type-open' : 'type-spec';

@@ -373,33 +373,41 @@ class EmbeddingBasedToolSelector(ToolSelector):
             raise RuntimeError(f"Embedding request failed: {exc}")
 
 
-class EmbeddingWithLLMRerankerToolSelector(ToolSelector):
-    """Strategy 4: Embedding-based retrieval with LLM reranking.
+class OpenAIEmbeddingWithLLMRerankerToolSelector(ToolSelector):
+    """Strategy 4: OpenAI embedding-based retrieval with DeepSeek LLM reranking.
     
-    Uses embeddings for initial retrieval, then reranks with an LLM.
+    Uses OpenAI embeddings for initial retrieval, then reranks with DeepSeek LLM.
+    Allows the LLM to exclude irrelevant tools.
+    
+    Retrieval phase: Get top-k candidates via embedding similarity
+    Reranking phase: LLM reorders candidates and can exclude irrelevant ones
     """
     
-    def __init__(self, top_k: int = 5, rerank_k: int = 3):
-        self.embedding_selector = EmbeddingBasedToolSelector(top_k=top_k)
-        self.rerank_endpoint = os.getenv("LANGGRAPH_SELECTOR_LLM_ENDPOINT")
-        self.rerank_api_key = os.getenv("LANGGRAPH_SELECTOR_LLM_API_KEY")
-        self.rerank_k = rerank_k
+    def __init__(self, top_k: int = 5, initial_k: int = 10):
+        self.embedding_selector = OpenAIEmbeddingBasedToolSelector(top_k=initial_k)
+        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
+        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        self.top_k = top_k
+        self.initial_k = initial_k  # Retrieve more candidates to rerank
     
     def select(self, messages: list, tools: list) -> list:
-        """Select tools: embeddings first, then LLM rerank."""
-        # First pass: embedding-based retrieval
+        """Select tools: embeddings first (top-10), then LLM rerank."""
+        # First pass: embedding-based retrieval to get candidates
         candidates = self.embedding_selector.select(messages, tools)
         
-        if len(candidates) <= self.rerank_k:
+        if len(candidates) <= self.top_k:
             return candidates
         
-        # Second pass: LLM reranking
-        if not self.rerank_endpoint:
-            raise ValueError("LANGGRAPH_SELECTOR_LLM_ENDPOINT environment variable must be set for embedding_reranker mode")
+        # Second pass: LLM reranking to filter and order
+        if not self.llm_endpoint:
+            raise ValueError("LANGGRAPH_LLM_ENDPOINT environment variable must be set for embedding_reranker mode")
         
         query = self._extract_query(messages)
+        if not query:
+            raise ValueError("No user query found in messages for embedding-reranker tool selection")
+        
         reranked = self._rerank_with_llm(query, candidates)
-        return reranked[:self.rerank_k]
+        return reranked[:self.top_k]
     
     def _extract_query(self, messages: list) -> str:
         """Extract the main query from messages."""
@@ -411,31 +419,56 @@ class EmbeddingWithLLMRerankerToolSelector(ToolSelector):
         return ""
     
     def _rerank_with_llm(self, query: str, tools: list) -> list:
-        """Use LLM to rerank candidate tools."""
+        """Use LLM to rerank candidate tools and exclude irrelevant ones."""
         tool_descriptions = []
+        tool_names = {}
+        
         for idx, tool in enumerate(tools):
             func = tool.get("function", {})
             name = func.get("name", "")
             desc = func.get("description", "")
             tool_descriptions.append(f"{idx}. {name}: {desc}")
+            tool_names[idx] = name
         
-        rerank_prompt = f"""Given the user query, rank the following tools by relevance (most relevant first).
+        # Log initial retrieval candidates
+        print(f"\n[EMBEDDING + LLM RERANKER SELECTOR]")
+        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"\n  === EMBEDDING RETRIEVAL PHASE (Top-{len(tools)}) ===")
+        for i, idx in enumerate(range(len(tools))):
+            tool_name = tool_names[idx]
+            print(f"    {i+1}. {tool_name}")
+        
+        rerank_prompt = f"""You are an expert AI that selects the most relevant tools for user queries.
+
+Given the user query, carefully analyze the provided tools and determine:
+1. Which tools are truly relevant to the query
+2. Order them by relevance (most relevant first)
+3. Exclude any tools that are clearly irrelevant
 
 User Query: {query}
 
-Tools:
+Available Tools:
 {chr(10).join(tool_descriptions)}
 
-Return a JSON array of tool indices in order of relevance, e.g. [0, 2, 1].
-Return ONLY the JSON array, no other text."""
+Respond with ONLY a JSON array of tool indices in descending order of relevance.
+You may exclude tools if they are not relevant.
+Example: [2, 0, 4]
+
+Response (JSON array only):"""
         
-        payload = {"messages": [{"role": "user", "content": rerank_prompt}]}
+        payload = {
+            "messages": [{"role": "user", "content": rerank_prompt}],
+            "model": "deepseek-chat",
+            "temperature": 0.0,
+            "top_p": 1.0,
+        }
+        
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json; charset=utf-8"}
-        if self.rerank_api_key:
-            headers["Authorization"] = f"Bearer {self.rerank_api_key}"
+        if self.llm_api_key:
+            headers["Authorization"] = f"Bearer {self.llm_api_key}"
         
-        req = urllib.request.Request(self.rerank_endpoint, data=body, headers=headers, method="POST")
+        req = urllib.request.Request(self.llm_endpoint, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = resp.read().decode("utf-8")
@@ -449,25 +482,55 @@ Return ONLY the JSON array, no other text."""
                     if isinstance(first, dict) and "message" in first and "content" in first["message"]:
                         response_text = first["message"]["content"]
                 
-                indices = json.loads(response_text)
-                reranked = [tools[i] for i in indices if i < len(tools)]
+                # Extract JSON array from response
+                try:
+                    # Try to parse the response as JSON directly
+                    indices = json.loads(response_text.strip())
+                except json.JSONDecodeError:
+                    # Try to extract JSON array from response text
+                    import re
+                    match = re.search(r'\[\s*(?:\d+\s*,?\s*)*\d*\s*\]', response_text)
+                    if match:
+                        indices = json.loads(match.group())
+                    else:
+                        print(f"[WARNING] Could not parse LLM response: {response_text[:200]}")
+                        # Fallback: return candidates as-is
+                        return tools
                 
-                # Log the reranking results
-                print(f"\n[EMBEDDING + RERANKER SELECTOR]")
-                print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
-                print(f"  Candidates from embedding: {len(tools)}")
-                print(f"  Reranked top-k: {self.rerank_k}")
-                print(f"  Final ranked order (indices from candidates):")
-                for i, idx in enumerate(indices[:5]):
-                    if idx < len(tools):
-                        tool_name = tools[idx].get("function", {}).get("name", "unknown")
-                        print(f"    {i+1}. {tool_name}")
-                if len(indices) > 5:
-                    print(f"    ... and {len(indices) - 5} more")
+                # Build reranked list from valid indices and track excluded tools
+                reranked = []
+                seen = set()
+                excluded_indices = set(range(len(tools)))
+                
+                for idx in indices:
+                    if isinstance(idx, int) and 0 <= idx < len(tools) and idx not in seen:
+                        reranked.append(tools[idx])
+                        seen.add(idx)
+                        excluded_indices.discard(idx)
+                
+                # Log the LLM reranking decisions
+                print(f"\n  === LLM RERANKING PHASE ===")
+                print(f"    LLM returned indices: {indices}")
+                print(f"\n  === RERANKED OUTPUT ===")
+                print(f"    Selected tools (LLM ordering):")
+                for i, tool in enumerate(reranked[:self.top_k]):
+                    tool_name = tool.get("function", {}).get("name", "unknown")
+                    print(f"      {i+1}. {tool_name}")
+                
+                if excluded_indices:
+                    print(f"\n    Excluded tools (not in LLM output):")
+                    for idx in sorted(excluded_indices)[:5]:
+                        tool_name = tool_names[idx]
+                        print(f"      - {tool_name}")
+                    if len(excluded_indices) > 5:
+                        print(f"      ... and {len(excluded_indices) - 5} more")
+                
+                print(f"\n    Summary: {len(reranked)} selected, {len(excluded_indices)} excluded")
                 print()
                 
                 return reranked
         except Exception as exc:
+            print(f"[ERROR] LLM reranking failed: {exc}")
             raise RuntimeError(f"LLM reranking failed: {exc}")
 
 
@@ -859,6 +922,50 @@ class EmbeddingContextBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         return full_conversation[:2000] if full_conversation else ""
 
 
+class OpenAIEmbeddingContextWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRerankerToolSelector):
+    """Strategy 7: OpenAI embedding-based retrieval with full conversation context + LLM reranking.
+    
+    Uses OpenAI embeddings for initial retrieval based on complete conversation history,
+    then reranks with DeepSeek LLM. Allows the LLM to exclude irrelevant tools.
+    
+    Retrieval phase: Embed full conversation history to get top-k candidates
+    Reranking phase: LLM reorders candidates considering full context and can exclude irrelevant ones
+    """
+    
+    def __init__(self, top_k: int = 5, initial_k: int = 10, cache_file: str = None, tools_file: str = None, schema_cache_file: str = None):
+        """Initialize with same parameters as parent class."""
+        # Create embedding selector with context support
+        self.embedding_selector = EmbeddingContextBasedToolSelector(
+            top_k=initial_k, 
+            cache_file=cache_file, 
+            tools_file=tools_file, 
+            schema_cache_file=schema_cache_file
+        )
+        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
+        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        self.top_k = top_k
+        self.initial_k = initial_k
+    
+    def _extract_query(self, messages: list) -> str:
+        """Extract full conversation context instead of just the latest query.
+        
+        This is used for LLM reranking prompt to provide full context.
+        """
+        conversation_parts = []
+        
+        for msg in messages:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            
+            # Include both user and assistant messages
+            if isinstance(content, str) and content.strip():
+                conversation_parts.append(f"[{role}]: {content}")
+        
+        # Concatenate all parts
+        full_conversation = "\n".join(conversation_parts)
+        return full_conversation[:2000] if full_conversation else ""
+
+
 # ==================== LLM Invocation ====================
 
 def _invoke_llm(messages: list, tools: list = None):
@@ -952,7 +1059,9 @@ def _create_tool_selector(mode: str) -> ToolSelector:
     elif mode == "embedding_context":
         return EmbeddingContextBasedToolSelector(top_k=5)
     elif mode == "embedding_reranker":
-        return EmbeddingWithLLMRerankerToolSelector(top_k=5, rerank_k=3)
+        return OpenAIEmbeddingWithLLMRerankerToolSelector(top_k=5, initial_k=10)
+    elif mode == "embedding_context_reranker":
+        return OpenAIEmbeddingContextWithLLMRerankerToolSelector(top_k=5, initial_k=10)
     else:  # default: in_context
         return InContextToolSelector()
 

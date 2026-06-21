@@ -8,10 +8,20 @@ from wtb.model_handler.base_handler import BaseHandler
 
 
 class LangGraphHandler(BaseHandler):
-    def __init__(self, model_name, temperature):
+    """Handler for LangGraph-based tool calling.
+    
+    Supports 4 tool selection strategies:
+    1. 'in_context' - LLM decides which tools to use (default)
+    2. 'hierarchical' - Smaller LLM selects relevant tools first
+    3. 'embedding' - Embedding-based tool retrieval
+    4. 'embedding_reranker' - Embeddings + LLM reranking
+    """
+    
+    def __init__(self, model_name, temperature, selection_mode=None):
         super().__init__(model_name, temperature)
         self.endpoint = os.getenv("LANGGRAPH_ENDPOINT")
         self.api_key = os.getenv("LANGGRAPH_API_KEY")
+        self.selection_mode = selection_mode or os.getenv("LANGGRAPH_TOOL_SELECTION_MODE", "in_context")
 
         if self.endpoint is None:
             raise ValueError("LANGGRAPH_ENDPOINT environment variable must be set")
@@ -28,35 +38,18 @@ class LangGraphHandler(BaseHandler):
     def _build_langgraph_payload(self, messages, tools):
         """Build the LangGraph execution payload.
 
-        The exact payload shape depends on your LangGraph deployment.
-        The benchmark sends a sequence of messages + available tools.
-        This method should translate that into a graph execution request.
+        Supports configurable tool selection strategy:
+        - in_context: all tools passed, LLM decides
+        - hierarchical: smaller LLM selects tools first
+        - embedding: embedding-based retrieval
+        - embedding_reranker: embeddings + LLM reranking
         """
         return {
             "input": {
                 "messages": messages,
                 "tools": tools,
             },
-            "nodes": [
-                {
-                    "id": "tool_selection",
-                    "type": "ToolSelectionNode",
-                    "input": {
-                        "messages": messages,
-                        "tools": tools,
-                    },
-                },
-                {
-                    "id": "llm_execution",
-                    "type": "LLMExecutionNode",
-                    "input": {
-                        "messages": messages,
-                    },
-                },
-            ],
-            "edges": [
-                {"from": "tool_selection", "to": "llm_execution", "output": "selected_tool_calls"}
-            ],
+            "selection_mode": self.selection_mode,
         }
 
     def _send_langgraph_request(self, payload):

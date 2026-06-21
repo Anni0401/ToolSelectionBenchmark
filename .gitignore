@@ -1,3 +1,4 @@
 .idea/*
 wild-tool-bench/.env
 multi-agent-framework/.env
+wild-tool-bench/.venv

@@ -1,20 +1,33 @@
 #!/usr/bin/env python3
 """
-Setup script to precompute OpenAI embeddings for all tools.
+Setup script to precompute embeddings for all tools.
 
-This script should be run once before starting the LangGraph server with embedding mode.
-It will embed all tools using OpenAI's text-embedding-3-small model and cache them locally.
+Supports two embedding backends:
+  openai  – OpenAI text-embedding-3-small (default)
+  qwen3   – Local Qwen3-Embedding-8B via a vLLM OpenAI-compatible endpoint
+
+This script should be run once before starting the LangGraph server with an
+embedding-based selection mode.  It pre-embeds all tools and saves the result
+to a local cache file so that runtime latency is minimal.
 
 Usage:
-    python setup_openai_embeddings.py --tools-file path/to/tools_en.jsonl
-    
-or set environment variables:
-    export OPENAI_API_KEY=your_api_key
+    # OpenAI backend (default)
+    export OPENAI_API_KEY=sk-...
     python setup_openai_embeddings.py --tools-file multi-agent-framework/tools/tools_en.jsonl
 
-Environment Variables:
-    OPENAI_API_KEY: Required. Your OpenAI API key with embedding model access
-    OPENAI_BASE_URL: Optional. Custom OpenAI API endpoint (default: https://api.openai.com/v1)
+    # Qwen3-Embedding-8B backend (local vLLM)
+    export QWEN3_EMBEDDING_BASE_URL=http://localhost:8001/v1
+    python setup_openai_embeddings.py --provider qwen3 \\
+        --tools-file multi-agent-framework/tools/tools_en.jsonl
+
+Environment Variables (OpenAI backend):
+    OPENAI_API_KEY:   Required. Your OpenAI API key with embedding model access.
+    OPENAI_BASE_URL:  Optional. Custom endpoint (default: https://api.openai.com/v1).
+
+Environment Variables (Qwen3 backend):
+    QWEN3_EMBEDDING_BASE_URL: Required. vLLM base URL (e.g. http://localhost:8001/v1).
+    QWEN3_EMBEDDING_API_KEY:  Optional. API key sent to vLLM (default: EMPTY).
+    QWEN3_EMBEDDING_MODEL:    Optional. Model name (default: Qwen/Qwen3-Embedding-8B).
 """
 
 import json
@@ -26,7 +39,10 @@ from pathlib import Path
 # Add parent directories to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from wtb.model_handler.api_inference.langgraph_app import OpenAIEmbeddingBasedToolSelector
+from wtb.model_handler.api_inference.langgraph_app import (
+    OpenAIEmbeddingBasedToolSelector,
+    Qwen3EmbeddingBasedToolSelector,
+)
 
 
 def find_tools_file(relative_path: str) -> str:
@@ -63,7 +79,6 @@ def find_tools_file(relative_path: str) -> str:
     print(f"  2. Verify you're in the right directory")
     print(f"  3. Try absolute path: --tools-file /full/path/to/tools_en.jsonl")
     print(f"\nOr run from the WildToolBench root directory:")
-    print(f"  cd /Users/anniherrmann/WildToolBench/WildToolBench")
     print(f"  python -m wtb.model_handler.api_inference.setup_openai_embeddings \\")
     print(f"    --tools-file multi-agent-framework/tools/tools_en.jsonl")
     
@@ -92,9 +107,16 @@ def load_tools(file_path: str) -> list:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Setup OpenAI embeddings for tool selection",
+        description="Precompute tool embeddings for LangGraph tool selection",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="openai",
+        choices=["openai", "qwen3"],
+        help="Embedding provider: 'openai' (default) or 'qwen3' (local vLLM)"
     )
     parser.add_argument(
         "--tools-file",
@@ -106,35 +128,73 @@ def main():
         "--cache-file",
         type=str,
         default=None,
-        help="Path to save the embeddings cache (default: tool_embeddings_cache.json in script directory)"
+        help=(
+            "Path to save the embeddings cache. "
+            "Defaults to tool_embeddings_cache.json (openai) or "
+            "tool_embeddings_cache_qwen3.json (qwen3) in the script directory."
+        )
     )
     parser.add_argument(
         "--skip-validation",
         action="store_true",
-        help="Skip validation of OPENAI_API_KEY before processing"
+        help="Skip pre-flight validation of environment variables"
     )
     
     args = parser.parse_args()
-    
-    # Check OpenAI API key
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("❌ Error: OPENAI_API_KEY environment variable is not set!")
-        print("\nTo set it:")
-        print("  export OPENAI_API_KEY=your_api_key_here")
-        print("  python setup_openai_embeddings.py --tools-file your_tools.jsonl")
-        sys.exit(1)
-    
-    print(f"✓ OPENAI_API_KEY is set (first 10 chars: {api_key[:10]}...)")
-    
-    # Check tools file
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if args.provider == "qwen3":
+        # ── Qwen3-Embedding-8B backend ────────────────────────────────────────
+        base_url = os.getenv("QWEN3_EMBEDDING_BASE_URL", "")
+        if not base_url and not args.skip_validation:
+            print("❌ Error: QWEN3_EMBEDDING_BASE_URL environment variable is not set!")
+            print("\nStart a local vLLM server, then set the URL:")
+            print("  export QWEN3_EMBEDDING_BASE_URL=http://localhost:8001/v1")
+            print("  python setup_openai_embeddings.py --provider qwen3 --tools-file your_tools.jsonl")
+            sys.exit(1)
+
+        model = os.getenv("QWEN3_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
+        effective_base_url = base_url or "http://localhost:8001/v1"
+        print(f"✓ Provider: Qwen3")
+        print(f"✓ Model:    {model}")
+        print(f"✓ Base URL: {effective_base_url}")
+
+        cache_file = args.cache_file or os.path.join(
+            script_dir, "tool_embeddings_cache_qwen3.json"
+        )
+        selector = Qwen3EmbeddingBasedToolSelector(top_k=5, cache_file=cache_file)
+        mode_name = "qwen3_embedding"
+
+    else:
+        # ── OpenAI backend (default) ──────────────────────────────────────────
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key and not args.skip_validation:
+            print("❌ Error: OPENAI_API_KEY environment variable is not set!")
+            print("\nTo set it:")
+            print("  export OPENAI_API_KEY=your_api_key_here")
+            print("  python setup_openai_embeddings.py --tools-file your_tools.jsonl")
+            sys.exit(1)
+
+        print(f"✓ Provider: OpenAI")
+        print(f"✓ Model:    text-embedding-3-small")
+        print(f"✓ Base URL: {os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}")
+        if api_key:
+            print(f"✓ API key:  {api_key[:10]}...")
+
+        cache_file = args.cache_file or os.path.join(
+            script_dir, "tool_embeddings_cache.json"
+        )
+        selector = OpenAIEmbeddingBasedToolSelector(top_k=5, cache_file=cache_file)
+        mode_name = "embedding"
+
+    # ── Common: locate and load tools ─────────────────────────────────────────
     tools_file = find_tools_file(args.tools_file)
     if not tools_file:
         sys.exit(1)
     
     print(f"✓ Tools file found: {tools_file}")
     
-    # Load tools
     print("\n📦 Loading tools...")
     try:
         tools = load_tools(tools_file)
@@ -143,23 +203,16 @@ def main():
         print(f"❌ Error loading tools: {e}")
         sys.exit(1)
     
-    # Create selector and setup embeddings
+    # ── Precompute embeddings ─────────────────────────────────────────────────
     print("\n🚀 Starting embedding setup...")
-    print(f"   Model: text-embedding-3-small")
-    print(f"   Base URL: {os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}")
     
     try:
-        cache_file = args.cache_file or os.path.join(
-            os.path.dirname(__file__),
-            "tool_embeddings_cache.json"
-        )
-        selector = OpenAIEmbeddingBasedToolSelector(top_k=5, cache_file=cache_file)
         selector.setup_embeddings(tools)
         
         print("\n✅ Setup completed successfully!")
         print(f"\nCache saved to: {cache_file}")
         print("\nYou can now start the server with:")
-        print("  LANGGRAPH_TOOL_SELECTION_MODE=embedding python -m wtb.model_handler.api_inference.langgraph_app")
+        print(f"  LANGGRAPH_TOOL_SELECTION_MODE={mode_name} python -m wtb.model_handler.api_inference.langgraph_app")
         
     except Exception as e:
         print(f"\n❌ Error during setup: {e}")

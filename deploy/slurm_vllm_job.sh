@@ -3,14 +3,14 @@
 #SBATCH --partition=gpu-vram-48gb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
 #SBATCH --output=/home/%u/vllm_deployment_%j.log
 #SBATCH --error=/home/%u/vllm_deployment_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=%u@your.institution
+#SBATCH --mail-user=%ann-kathrin.herrmann@students.uni-mannheim.de
 
 # ============================================================================
 # SLURM Job Script: vLLM Qwen Model Deployment for Hierarchical Selection
@@ -73,12 +73,12 @@ else
 fi
 
 # Set up environment variables
-export MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
+export MODEL_NAME="Qwen/Qwen3-30B-A3B"
 export VLLM_PORT=8000
-export GPU_MEMORY_UTILIZATION=0.8
+export GPU_MEMORY_UTILIZATION=0.9
 export MAX_BATCH_SIZE=32
 export DTYPE=float16
-export TENSOR_PARALLEL_SIZE=${SLURM_GPUS_PER_NODE:-1}
+export TENSOR_PARALLEL_SIZE=2
 
 # Optional: Set conda environment name if you have one
 # export VLLM_ENV=tool-selection

@@ -123,7 +123,7 @@ class HierarchicalToolSelector(ToolSelector):
     def __init__(self, max_tools: int = 10, schema_cache_file: str = None):
         self.endpoint = os.getenv("LANGGRAPH_SELECTOR_LLM_ENDPOINT")
         self.api_key = os.getenv("LANGGRAPH_SELECTOR_LLM_API_KEY")
-        self.model = os.getenv("LANGGRAPH_SELECTOR_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-1M")
+        self.model = os.getenv("LANGGRAPH_SELECTOR_LLM_MODEL", "Qwen/Qwen3-30B-A3B")
         self.max_tools = max_tools
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
@@ -966,6 +966,306 @@ class OpenAIEmbeddingContextWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRe
         return full_conversation[:2000] if full_conversation else ""
 
 
+# ==================== Qwen3 Embedding Strategies ====================
+
+class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
+    """Strategy 8: Qwen3-Embedding-8B based tool selection with caching.
+
+    Uses a local Qwen3-Embedding-8B model served via a vLLM OpenAI-compatible
+    endpoint for embeddings.  Follows the Qwen3-Embedding best-practice of
+    prepending a task instruction to query texts (documents are embedded as-is).
+
+    Environment Variables:
+        QWEN3_EMBEDDING_BASE_URL: vLLM base URL (default: http://localhost:8001/v1)
+        QWEN3_EMBEDDING_API_KEY:  API key sent to vLLM (default: EMPTY)
+        QWEN3_EMBEDDING_MODEL:    Model name (default: Qwen/Qwen3-Embedding-8B)
+    """
+
+    TASK_INSTRUCTION = (
+        "Given a user query about tool usage, retrieve the most relevant tool "
+        "function that can fulfill the described task."
+    )
+
+    def __init__(self, top_k: int = 5, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        self.top_k = top_k
+        self.cache_file = cache_file or os.path.join(
+            os.path.dirname(__file__),
+            "tool_embeddings_cache_qwen3.json"
+        )
+        self.schema_cache_file = schema_cache_file or os.path.join(
+            os.path.dirname(__file__),
+            "tool_schemas_cache.json"
+        )
+        self.tools_file = tools_file
+        self.api_key = os.getenv("QWEN3_EMBEDDING_API_KEY", "EMPTY")
+        self.base_url = os.getenv("QWEN3_EMBEDDING_BASE_URL", "http://localhost:8001/v1")
+        self.model = os.getenv("QWEN3_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
+        self.embedding_cache = {}
+        self.tools_cache = None
+        self._load_cache()
+        self._load_valid_tools_from_schema_cache()
+
+    def _extract_query(self, messages: list) -> str:
+        """Extract the latest user query and prepend the Qwen3 instruction prefix."""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {content[:500]}"
+        return ""
+
+    def select(self, messages: list, tools: list) -> list:
+        """Select top-k tools using Qwen3-Embedding-8B via local vLLM endpoint."""
+        if not self.base_url:
+            raise ValueError(
+                "QWEN3_EMBEDDING_BASE_URL must be set for qwen3_embedding mode"
+            )
+        if not SKLEARN_AVAILABLE:
+            raise ImportError(
+                "scikit-learn is required for embedding mode. "
+                "Install with: pip install scikit-learn"
+            )
+        if not OPENAI_AVAILABLE:
+            raise ImportError(
+                "openai package is required. Install with: pip install openai"
+            )
+
+        all_tools = self.tools_cache if self.tools_cache else tools
+        if not all_tools:
+            print("[QWEN3 EMBEDDING SELECTOR] No tools available")
+            return []
+
+        query = self._extract_query(messages)
+        if not query:
+            raise ValueError(
+                "No user query found in messages for Qwen3 embedding-based tool selection"
+            )
+
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+        try:
+            query_response = client.embeddings.create(input=query, model=self.model)
+            query_embedding = query_response.data[0].embedding
+        except Exception as e:
+            raise RuntimeError(f"Failed to embed query with Qwen3: {e}")
+
+        tool_embeddings = []
+        tool_descriptions = []
+        cached_count = 0
+        missing_count = 0
+
+        for tool in all_tools:
+            func = tool.get("function", {})
+            name = func.get("name", "")
+            desc = func.get("description", "")
+            tool_desc = f"{name}: {desc}"
+
+            if tool_desc in self.embedding_cache:
+                embedding = self.embedding_cache[tool_desc]
+                cached_count += 1
+            else:
+                try:
+                    response = client.embeddings.create(
+                        input=tool_desc, model=self.model
+                    )
+                    embedding = response.data[0].embedding
+                    self.embedding_cache[tool_desc] = embedding
+                    missing_count += 1
+                except Exception as e:
+                    print(f"[WARNING] Failed to embed tool {name}: {e}")
+                    embedding = [0] * len(query_embedding)
+
+            tool_embeddings.append(embedding)
+            tool_descriptions.append(tool_desc)
+
+        if not tool_embeddings:
+            raise ValueError("No tools with descriptions found for embedding")
+
+        similarities = cosine_similarity([query_embedding], tool_embeddings)[0]
+        sorted_indices = np.argsort(similarities)[::-1]
+
+        selected = []
+        selected_scores = []
+        seen_tool_names = set()
+
+        for idx in sorted_indices:
+            tool = all_tools[idx]
+            tool_name = tool.get("function", {}).get("name", "unknown")
+            if tool_name not in seen_tool_names:
+                selected.append(tool)
+                selected_scores.append(similarities[idx])
+                seen_tool_names.add(tool_name)
+                if len(selected) >= self.top_k:
+                    break
+
+        print(f"\n[QWEN3 EMBEDDING SELECTOR]")
+        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Model: {self.model}")
+        print(f"  Total available tools: {len(all_tools)}")
+        print(f"  Top-k (unique): {self.top_k}")
+        print(f"  Cache hits: {cached_count}, Runtime computed: {missing_count}")
+        print(f"  Selected tools (ranked by relevance):")
+        for i, (tool, score) in enumerate(zip(selected[:5], selected_scores[:5])):
+            tool_name = tool.get("function", {}).get("name", "unknown")
+            print(f"    {i+1}. {tool_name} (similarity: {score:.4f})")
+        if len(selected) > 5:
+            print(f"    ... and {len(selected) - 5} more")
+        print()
+
+        return selected
+
+    def setup_embeddings(self, tools: list):
+        """Precompute Qwen3 embeddings for all tools and cache them locally.
+
+        Documents (tool descriptions) are embedded without any instruction prefix,
+        following the Qwen3-Embedding asymmetric retrieval recommendation.
+        """
+        if not OPENAI_AVAILABLE:
+            raise ImportError(
+                "openai package is required. Install with: pip install openai"
+            )
+
+        seen_names = set()
+        unique_tools = []
+        duplicates = 0
+        for tool in tools:
+            tool_name = tool.get("function", {}).get("name", "unknown")
+            if tool_name not in seen_names:
+                unique_tools.append(tool)
+                seen_names.add(tool_name)
+            else:
+                duplicates += 1
+
+        if duplicates > 0:
+            print(f"[QWEN3 EMBEDDING SETUP] Removed {duplicates} duplicate tools")
+
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+        print(f"\n[QWEN3 EMBEDDING SETUP] Starting to embed {len(unique_tools)} tools...")
+        print(f"[QWEN3 EMBEDDING SETUP] Model: {self.model}")
+        print(f"[QWEN3 EMBEDDING SETUP] Base URL: {self.base_url}")
+        print(f"[QWEN3 EMBEDDING SETUP] Cache file: {self.cache_file}")
+
+        texts_to_embed = []
+        tool_indices = []
+
+        for idx, tool in enumerate(unique_tools):
+            func = tool.get("function", {})
+            name = func.get("name", "unknown")
+            desc = func.get("description", "")
+            tool_desc = f"{name}: {desc}"
+
+            if tool_desc in self.embedding_cache:
+                print(f"  [{idx+1}/{len(unique_tools)}] {name} - (cached)")
+                continue
+
+            texts_to_embed.append(tool_desc)
+            tool_indices.append((idx, name, tool_desc))
+
+        if not texts_to_embed:
+            print(f"[QWEN3 EMBEDDING SETUP] All {len(unique_tools)} tools already cached!")
+            return
+
+        # Use a smaller batch size suitable for local vLLM deployments
+        batch_size = 32
+        for batch_idx in range(0, len(texts_to_embed), batch_size):
+            batch = texts_to_embed[batch_idx:batch_idx + batch_size]
+            batch_tools = tool_indices[batch_idx:batch_idx + batch_size]
+
+            try:
+                response = client.embeddings.create(input=batch, model=self.model)
+                for i, embedding_obj in enumerate(response.data):
+                    tool_idx, tool_name, tool_desc = batch_tools[i]
+                    self.embedding_cache[tool_desc] = embedding_obj.embedding
+                    print(f"  [{tool_idx+1}/{len(unique_tools)}] {tool_name} - OK")
+            except Exception as e:
+                print(f"[ERROR] Failed to embed batch {batch_idx // batch_size}: {e}")
+                raise RuntimeError(f"Qwen3 embedding request failed: {e}")
+
+        self._save_cache()
+        print(
+            f"[QWEN3 EMBEDDING SETUP] Completed! "
+            f"{len(self.embedding_cache)} embeddings cached.\n"
+        )
+
+
+class Qwen3EmbeddingContextBasedToolSelector(Qwen3EmbeddingBasedToolSelector):
+    """Strategy 9: Qwen3-Embedding-8B with full conversation context.
+
+    Embeds the complete multi-turn conversation history (all previous user and
+    assistant messages) instead of just the most recent query, giving better
+    semantic understanding in multi-turn interactions.
+    """
+
+    def _extract_query(self, messages: list) -> str:
+        """Concatenate full conversation history and prepend Qwen3 instruction prefix."""
+        conversation_parts = []
+        for msg in messages:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                conversation_parts.append(f"[{role}]: {content}")
+
+        full_conversation = "\n".join(conversation_parts)[:2000]
+        if not full_conversation:
+            return ""
+        return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {full_conversation}"
+
+
+class Qwen3EmbeddingWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRerankerToolSelector):
+    """Strategy 10: Qwen3-Embedding-8B retrieval + LLM reranking.
+
+    Uses Qwen3-Embedding-8B for the first-pass retrieval (top-initial_k candidates)
+    and then applies LLM reranking to produce the final top-k tools.
+    """
+
+    def __init__(self, top_k: int = 5, initial_k: int = 10, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        self.embedding_selector = Qwen3EmbeddingBasedToolSelector(
+            top_k=initial_k,
+            cache_file=cache_file,
+            tools_file=tools_file,
+            schema_cache_file=schema_cache_file,
+        )
+        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
+        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        self.top_k = top_k
+        self.initial_k = initial_k
+
+
+class Qwen3EmbeddingContextWithLLMRerankerToolSelector(OpenAIEmbeddingContextWithLLMRerankerToolSelector):
+    """Strategy 11: Qwen3-Embedding-8B + full conversation context + LLM reranking.
+
+    Combines full conversation context embedding (Qwen3) with LLM-based reranking
+    for the highest quality tool selection in multi-turn conversations.
+    """
+
+    def __init__(self, top_k: int = 5, initial_k: int = 10, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        self.embedding_selector = Qwen3EmbeddingContextBasedToolSelector(
+            top_k=initial_k,
+            cache_file=cache_file,
+            tools_file=tools_file,
+            schema_cache_file=schema_cache_file,
+        )
+        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
+        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        self.top_k = top_k
+        self.initial_k = initial_k
+
+    def _extract_query(self, messages: list) -> str:
+        """Extract full conversation context for the LLM reranking prompt."""
+        conversation_parts = []
+        for msg in messages:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                conversation_parts.append(f"[{role}]: {content}")
+        full_conversation = "\n".join(conversation_parts)
+        return full_conversation[:2000] if full_conversation else ""
+
+
 # ==================== LLM Invocation ====================
 
 def _invoke_llm(messages: list, tools: list = None):
@@ -1062,6 +1362,14 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return OpenAIEmbeddingWithLLMRerankerToolSelector(top_k=5, initial_k=10)
     elif mode == "embedding_context_reranker":
         return OpenAIEmbeddingContextWithLLMRerankerToolSelector(top_k=5, initial_k=10)
+    elif mode == "qwen3_embedding":
+        return Qwen3EmbeddingBasedToolSelector(top_k=5)
+    elif mode == "qwen3_embedding_context":
+        return Qwen3EmbeddingContextBasedToolSelector(top_k=5)
+    elif mode == "qwen3_embedding_reranker":
+        return Qwen3EmbeddingWithLLMRerankerToolSelector(top_k=5, initial_k=10)
+    elif mode == "qwen3_embedding_context_reranker":
+        return Qwen3EmbeddingContextWithLLMRerankerToolSelector(top_k=5, initial_k=10)
     else:  # default: in_context
         return InContextToolSelector()
 

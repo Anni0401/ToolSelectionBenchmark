@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tool Analysis & Comparison</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        :root {
+            --bg: #0f1118;
+            --bg2: #161b22;
+            --bg3: #21262d;
+            --card: #0d1117;
+            --border: rgba(48, 54, 61, 0.6);
+            --border-light: rgba(48, 54, 61, 0.3);
+            --text: #c9d1d9;
+            --text2: #8b949e;
+            --text3: #6e7681;
+            --pri: #58a6ff;
+            --pri-dark: #1f6feb;
+            --acc: #79c0ff;
+            --green: #3fb950;
+            --yellow: #d29922;
+            --red: #f85149;
+            --purple: #bc8ef9;
+            --cyan: #56d4ff;
+            --font: 'Inter', -apple-system, sans-serif;
+            --mono: 'Monaco', 'Menlo', monospace;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            font-family: var(--font);
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 24px; height: 100vh; display: flex; flex-direction: column; }
+
+        /* Header */
+        .header {
+            margin-bottom: 32px;
+            border-bottom: 1px solid var(--border-light);
+            padding-bottom: 24px;
+        }
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--pri), var(--purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header p { color: var(--text2); font-size: 0.95rem; }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+        .stat-card {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 20px;
+            transition: all 0.3s;
+        }
+        .stat-card:hover {
+            border-color: var(--pri);
+            background: rgba(88, 166, 255, 0.05);
+        }
+        .stat-card .label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text3);
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--pri);
+        }
+        .stat-card .detail {
+            font-size: 0.8rem;
+            color: var(--text2);
+            margin-top: 8px;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .search-box {
+            flex: 1;
+            min-width: 250px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 16px;
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+        .search-box::placeholder {
+            color: var(--text3);
+        }
+        .search-box:focus {
+            outline: none;
+            border-color: var(--pri);
+            background: var(--bg3);
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .filter-label {
+            font-size: 0.85rem;
+            color: var(--text2);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .filter-btn {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--pri-dark);
+            border-color: var(--pri);
+            color: var(--acc);
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            overflow-y: auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            background: var(--bg3);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .panel-header h2 {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+        .panel-header .badge {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--pri);
+        }
+
+        .panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0;
+        }
+
+        .tool-list {
+            list-style: none;
+        }
+        .tool-item {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tool-item:hover {
+            background: rgba(88, 166, 255, 0.08);
+            border-left: 3px solid var(--pri);
+            padding-left: 17px;
+        }
+        .tool-item.selected {
+            background: rgba(88, 166, 255, 0.15);
+            border-left: 3px solid var(--pri);
+            padding-left: 17px;
+        }
+        .tool-item:last-child {
+            border-bottom: none;
+        }
+
+        .tool-name {
+            font-weight: 600;
+            color: var(--pri);
+            font-size: 0.95rem;
+            margin-bottom: 4px;
+        }
+        .tool-desc {
+            color: var(--text2);
+            font-size: 0.85rem;
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+        .tool-meta {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 0.75rem;
+        }
+        .tag {
+            background: rgba(79, 195, 247, 0.1);
+            color: var(--cyan);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+        .tag.synthetic {
+            background: rgba(191, 144, 0, 0.15);
+            color: var(--yellow);
+        }
+        .tag.source {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--green);
+        }
+
+        /* Similarity bars */
+        .similarity-bar {
+            height: 6px;
+            background: var(--bg3);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+        .similarity-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--pri), var(--cyan));
+            border-radius: 3px;
+        }
+
+        /* Details Panel */
+        .details-panel {
+            grid-column: 1 / -1;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .detail-title {
+            font-size: 1.3rem;
+            font-weight: 800;
+            margin-bottom: 16px;
+            color: var(--pri);
+        }
+        .detail-section {
+            margin-bottom: 20px;
+        }
+        .detail-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text3);
+            margin-bottom: 6px;
+            font-weight: 700;
+        }
+        .detail-content {
+            color: var(--text);
+            font-size: 0.9rem;
+            line-height: 1.6;
+            font-family: var(--mono);
+            background: var(--bg3);
+            padding: 12px;
+            border-radius: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .param-table {
+            width: 100%;
+            font-size: 0.85rem;
+            border-collapse: collapse;
+        }
+        .param-table th, .param-table td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            white-space: normal;
+        }
+        .param-table th {
+            font-weight: 700;
+            color: var(--pri);
+            background: var(--bg3);
+        }
+        .param-table td {
+            color: var(--text);
+        }
+        .param-table td:last-child {
+            max-width: 400px;
+        }
+
+        /* Empty State */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            gap: 16px;
+            color: var(--text2);
+        }
+        .empty-state i {
+            font-size: 3rem;
+            opacity: 0.5;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg2);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text3);
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .main-content { grid-template-columns: 1fr; }
+            .details-panel { grid-column: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-wand-magic-sparkles"></i> Tool Analysis & Comparison</h1>
+            <p>Explore original tools and their synthetically generated variants. Compare them to assess quality and coverage.</p>
+        </div>
+
+        <div class="stats-grid" id="statsGrid"></div>
+
+        <div class="controls">
+            <input type="text" class="search-box" id="searchInput" placeholder="Search tools by name or description...">
+            <div class="filter-group">
+                <span class="filter-label">View:</span>
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="original">Original</button>
+                <button class="filter-btn" data-filter="synthetic">Synthetic</button>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="panel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-cube"></i> Original Tools</h2>
+                    <span class="badge" id="origCount">0</span>
+                </div>
+                <div class="panel-body">
+                    <ul class="tool-list" id="originalList"></ul>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-sparkles"></i> Synthetic Tools</h2>
+                    <span class="badge" id="synthCount">0</span>
+                </div>
+                <div class="panel-body">
+                    <ul class="tool-list" id="syntheticList"></ul>
+                </div>
+            </div>
+
+            <div class="details-panel" id="detailsPanel" style="display: none;">
+                <div id="detailsContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allOriginalTools = [];
+        let allSyntheticTools = [];
+        let filteredTools = { original: [], synthetic: [] };
+        let currentFilter = 'all';
+        let selectedOriginal = null;
+        let selectedSynthetic = null;
+        let neighborsData = {}; // tool_name -> [neighbors array]
+        let syntheticSet = new Set(); // for quick lookup
+        let syntheticsBySource = {}; // source_tool -> [synthetic tools]
+
+        // Load data from JSONL files
+        async function loadData() {
+            try {
+                // Load original tools
+                const originalResponse = await fetch('../multi-agent-framework/tools/tools_en.jsonl');
+                const originalText = await originalResponse.text();
+                let toolCounter = 0;
+                allOriginalTools = originalText
+                    .split('\n')
+                    .filter(line => line.trim())
+                    .flatMap((line, idx) => {
+                        try {
+                            const parsed = JSON.parse(line);
+                            // Each line might be an array of tools or a single tool
+                            const tools = Array.isArray(parsed) ? parsed : [parsed];
+                            return tools.map(tool => ({
+                                ...tool,
+                                id: 'orig_' + (toolCounter++),
+                                isSynthetic: false
+                            }));
+                        } catch (e) {
+                            console.warn('Failed to parse line:', e);
+                            return [];
+                        }
+                    });
+
+                // Load synthetic tools
+                const syntheticResponse = await fetch('../analysis_embeddings/tools_en_synthetic_candidates.jsonl');
+                const syntheticText = await syntheticResponse.text();
+                toolCounter = 0;
+                allSyntheticTools = syntheticText
+                    .split('\n')
+                    .filter(line => line.trim())
+                    .flatMap((line, idx) => {
+                        try {
+                            const parsed = JSON.parse(line);
+                            // Each line is a single tool object
+                            return {
+                                ...parsed,
+                                id: 'synth_' + (toolCounter++),
+                                isSynthetic: true
+                            };
+                        } catch (e) {
+                            console.warn('Failed to parse synthetic line:', e);
+                            return null;
+                        }
+                    })
+                    .filter(Boolean);
+
+                console.log(`Loaded ${allOriginalTools.length} original tools and ${allSyntheticTools.length} synthetic tools`);
+                
+                // Build synthetic lookup set and map by source
+                allSyntheticTools.forEach(t => {
+                    syntheticSet.add(t.function.name);
+                    const source = t._source_tool;
+                    if (source) {
+                        if (!syntheticsBySource[source]) {
+                            syntheticsBySource[source] = [];
+                        }
+                        syntheticsBySource[source].push(t);
+                    }
+                });
+                
+                // Load neighbors data
+                const neighborsResponse = await fetch('../analysis_embeddings/tools_en_tool_neighbors.csv');
+                const neighborsText = await neighborsResponse.text();
+                const lines = neighborsText.split('\n').filter(line => line.trim());
+                lines.slice(1).forEach(line => {
+                    const [tool_name, neighbor_name, similarity, rank] = line.split(',');
+                    const sim = parseFloat(similarity);
+                    
+                    // Only include neighbors with similarity > 0.75
+                    if (sim > 0.75) {
+                        if (!neighborsData[tool_name]) {
+                            neighborsData[tool_name] = [];
+                        }
+                        neighborsData[tool_name].push({
+                            name: neighbor_name,
+                            similarity: sim,
+                            rank: parseInt(rank),
+                            isSynthetic: false
+                        });
+                    }
+                });
+                console.log(`Loaded neighbors for ${Object.keys(neighborsData).length} tools (similarity > 0.75)`);
+                console.log(`Found synthetics for ${Object.keys(syntheticsBySource).length} original tools`);
+                
+                updateUI();
+            } catch (error) {
+                console.error('Error loading data:', error);
+                alert('Failed to load tool data. Make sure the JSONL files exist.');
+            }
+        }
+
+        function updateUI() {
+            updateStats();
+            filterTools();
+            renderTools();
+        }
+
+        function updateStats() {
+            // Count unique tool names (not entries, since tools may be duplicated)
+            const uniqueOriginalNames = new Set(allOriginalTools.map(t => t.function.name));
+            const uniqueSyntheticNames = new Set(allSyntheticTools.map(t => t.function.name));
+            
+            const origCount = uniqueOriginalNames.size;
+            const synthCount = allSyntheticTools.length; // Synthetics typically don't have duplicates
+            
+            // Group synthetic by source
+            const sourceTools = new Set(allSyntheticTools.map(t => t._source_tool).filter(Boolean));
+
+            document.getElementById('statsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="label">Original Tools</div>
+                    <div class="value">${origCount}</div>
+                    <div class="detail">Unique tool names</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Synthetic Tools</div>
+                    <div class="value">${synthCount}</div>
+                    <div class="detail">Generated variants</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Coverage</div>
+                    <div class="value">${sourceTools.size}</div>
+                    <div class="detail">Source tools with synthetics</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Ratio</div>
+                    <div class="value">${(synthCount / origCount).toFixed(2)}x</div>
+                    <div class="detail">Synthetic per original</div>
+                </div>
+            `;
+
+            document.getElementById('origCount').textContent = origCount;
+            document.getElementById('synthCount').textContent = synthCount;
+        }
+
+        function filterTools() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            
+            // Deduplicate by tool name, keeping first occurrence
+            const seenOriginal = new Set();
+            filteredTools.original = allOriginalTools.filter(tool => {
+                const name = tool.function.name;
+                if (seenOriginal.has(name)) return false;
+                
+                const matchesSearch = 
+                    name.toLowerCase().includes(searchTerm) ||
+                    (tool.function.description || '').toLowerCase().includes(searchTerm);
+                
+                if (matchesSearch) seenOriginal.add(name);
+                return matchesSearch;
+            });
+
+            // Synthetics typically don't have duplicates, but deduplicate just in case
+            const seenSynthetic = new Set();
+            filteredTools.synthetic = allSyntheticTools.filter(tool => {
+                const name = tool.function.name;
+                if (seenSynthetic.has(name)) return false;
+                
+                const matchesSearch = 
+                    name.toLowerCase().includes(searchTerm) ||
+                    (tool.function.description || '').toLowerCase().includes(searchTerm);
+                
+                if (matchesSearch) seenSynthetic.add(name);
+                return matchesSearch;
+            });
+
+            renderTools();
+        }
+
+        function renderTools() {
+            const originalList = document.getElementById('originalList');
+            const syntheticList = document.getElementById('syntheticList');
+
+            // Render original tools
+            if (filteredTools.original.length === 0) {
+                originalList.innerHTML = '<div class="empty-state"><i class="fas fa-inbox"></i><p>No tools found</p></div>';
+            } else {
+                originalList.innerHTML = filteredTools.original.map(tool => {
+                    const params = tool.function.parameters?.properties || {};
+                    return `
+                        <li class="tool-item ${selectedOriginal === tool.id ? 'selected' : ''}" data-id="${tool.id}" onclick="selectTool('original', '${tool.id}')">
+                            <div class="tool-name">${tool.function.name}</div>
+                            <div class="tool-desc">${(tool.function.description || 'No description').substring(0, 100)}...</div>
+                            <div class="tool-meta">
+                                <span class="tag source">Original</span>
+                                <span class="tag">${Object.keys(params).length} params</span>
+                            </div>
+                        </li>
+                    `;
+                }).join('');
+            }
+
+            // Render synthetic tools
+            if (filteredTools.synthetic.length === 0) {
+                syntheticList.innerHTML = '<div class="empty-state"><i class="fas fa-inbox"></i><p>No synthetics found</p></div>';
+            } else {
+                syntheticList.innerHTML = filteredTools.synthetic.map(tool => {
+                    const params = tool.function.parameters?.properties || {};
+                    const source = tool._source_tool || 'Unknown';
+                    return `
+                        <li class="tool-item ${selectedSynthetic === tool.id ? 'selected' : ''}" data-id="${tool.id}" onclick="selectTool('synthetic', '${tool.id}')">
+                            <div class="tool-name">${tool.function.name}</div>
+                            <div class="tool-desc">${(tool.function.description || 'No description').substring(0, 100)}...</div>
+                            <div class="tool-meta">
+                                <span class="tag synthetic">Synthetic</span>
+                                <span class="tag">${Object.keys(params).length} params</span>
+                                <span class="tag">${source}</span>
+                            </div>
+                        </li>
+                    `;
+                }).join('');
+            }
+        }
+
+        function selectTool(type, id) {
+            if (type === 'original') {
+                selectedOriginal = selectedOriginal === id ? null : id;
+                document.querySelectorAll('#originalList .tool-item').forEach(el => {
+                    el.classList.toggle('selected', el.dataset.id === selectedOriginal);
+                });
+            } else {
+                selectedSynthetic = selectedSynthetic === id ? null : id;
+                document.querySelectorAll('#syntheticList .tool-item').forEach(el => {
+                    el.classList.toggle('selected', el.dataset.id === selectedSynthetic);
+                });
+            }
+            updateDetailsPanel();
+        }
+
+        function updateDetailsPanel() {
+            const detailsPanel = document.getElementById('detailsPanel');
+            const detailsContent = document.getElementById('detailsContent');
+
+            if (!selectedOriginal && !selectedSynthetic) {
+                detailsPanel.style.display = 'none';
+                return;
+            }
+
+            detailsPanel.style.display = 'block';
+
+            let html = '';
+
+            if (selectedOriginal) {
+                const tool = allOriginalTools.find(t => t.id === selectedOriginal);
+                html += renderToolDetails(tool, 'Original Tool');
+            }
+
+            if (selectedSynthetic) {
+                const tool = allSyntheticTools.find(t => t.id === selectedSynthetic);
+                html += renderToolDetails(tool, 'Synthetic Tool', tool._source_tool);
+            }
+
+            detailsContent.innerHTML = html;
+        }
+
+        function renderToolDetails(tool, title, sourceToolName = null) {
+            const func = tool.function;
+            const params = func.parameters?.properties || {};
+            const required = func.parameters?.required || [];
+            const toolName = func.name;
+            const isSynthetic = tool.isSynthetic;
+
+            let html = `
+                <div class="detail-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <div class="detail-title">${title}: ${toolName}</div>
+            `;
+
+            if (sourceToolName) {
+                html += `<span class="tag synthetic"><i class="fas fa-sparkles"></i> Based on: ${sourceToolName}</span>`;
+            }
+
+            html += `
+                    </div>
+                    <div class="detail-label">Description</div>
+                    <div class="detail-content">${func.description || 'N/A'}</div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Parameters</div>
+                    <table class="param-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Required</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${Object.entries(params).map(([name, param]) => `
+                                <tr>
+                                    <td><strong>${name}</strong></td>
+                                    <td>${param.type || 'unknown'}</td>
+                                    <td>${required.includes(name) ? '✓' : '—'}</td>
+                                    <td>${param.description || 'N/A'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+
+            // Only show similar tools section for ORIGINAL tools
+            if (!isSynthetic) {
+                const similarOriginal = (neighborsData[toolName] || []).slice(0, 5);
+                const synthetics = (syntheticsBySource[toolName] || []).slice(0, 5 - similarOriginal.length);
+                const totalSimilar = similarOriginal.length + synthetics.length;
+
+                if (totalSimilar > 0) {
+                    html += `
+                        <div class="detail-section">
+                            <div class="detail-label">🔗 Similar Tools (Cosine Similarity > 0.75) + Generated Synthetics</div>
+                            <div style="font-size: 0.8rem; color: var(--text2); margin-bottom: 12px;">
+                                Showing ${totalSimilar} tools: ${similarOriginal.length} original + ${synthetics.length} synthetic
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 10px;">
+                    `;
+
+                    // Show original similar tools first
+                    similarOriginal.forEach((neighbor, idx) => {
+                        const barWidth = neighbor.similarity * 100;
+                        html += `
+                            <div style="margin-bottom: 4px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                    <span style="font-size: 0.85rem; font-weight: 500;">
+                                        #${idx + 1}. <strong>${neighbor.name}</strong>
+                                        <span class="tag source" style="margin-left: 6px; font-size: 0.7rem;">📦 Original</span>
+                                    </span>
+                                    <span style="font-size: 0.85rem; font-weight: 600; color: var(--pri);">${neighbor.similarity.toFixed(3)}</span>
+                                </div>
+                                <div style="height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden;">
+                                    <div style="height: 100%; width: ${barWidth}%; background: linear-gradient(90deg, var(--pri), var(--cyan)); border-radius: 3px;"></div>
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    // Show synthetic tools
+                    synthetics.forEach((synth, idx) => {
+                        html += `
+                            <div style="margin-bottom: 4px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                    <span style="font-size: 0.85rem; font-weight: 500;">
+                                        #${similarOriginal.length + idx + 1}. <strong>${synth.function.name}</strong>
+                                        <span class="tag synthetic" style="margin-left: 6px; font-size: 0.7rem;">✨ Synthetic</span>
+                                    </span>
+                                    <span style="font-size: 0.8rem; color: var(--text3);">—</span>
+                                </div>
+                                <div style="font-size: 0.8rem; color: var(--text2); padding: 6px 8px; background: var(--bg3); border-radius: 4px;">
+                                    ${synth.function.description || 'No description'}
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    html += `
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+
+            html += `<div style="height: 20px;"></div>`;
+
+            return html;
+        }
+
+        // Event listeners
+        document.getElementById('searchInput').addEventListener('input', filterTools);
+
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                currentFilter = e.target.dataset.filter;
+                // Can add view filtering logic here if needed
+            });
+        });
+
+        // Load data on page load
+        loadData();
+    </script>
+</body>
+</html>

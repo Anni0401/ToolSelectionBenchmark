@@ -374,9 +374,9 @@ class EmbeddingBasedToolSelector(ToolSelector):
 
 
 class OpenAIEmbeddingWithLLMRerankerToolSelector(ToolSelector):
-    """Strategy 4: OpenAI embedding-based retrieval with DeepSeek LLM reranking.
+    """Strategy 4: OpenAI embedding-based retrieval with local vLLM LLM reranking.
     
-    Uses OpenAI embeddings for initial retrieval, then reranks with DeepSeek LLM.
+    Uses OpenAI embeddings for initial retrieval, then reranks with local LLM.
     Allows the LLM to exclude irrelevant tools.
     
     Retrieval phase: Get top-k candidates via embedding similarity
@@ -385,8 +385,9 @@ class OpenAIEmbeddingWithLLMRerankerToolSelector(ToolSelector):
     
     def __init__(self, top_k: int = 5, initial_k: int = 10):
         self.embedding_selector = OpenAIEmbeddingBasedToolSelector(top_k=initial_k)
-        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
-        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        _base = os.getenv("EXECUTING_LLM_BASE_URL", "")
+        self.llm_endpoint = (_base.rstrip("/") + "/chat/completions") if _base else None
+        self.llm_api_key = os.getenv("EXECUTING_LLM_API_KEY", "EMPTY")
         self.top_k = top_k
         self.initial_k = initial_k  # Retrieve more candidates to rerank
     
@@ -400,7 +401,7 @@ class OpenAIEmbeddingWithLLMRerankerToolSelector(ToolSelector):
         
         # Second pass: LLM reranking to filter and order
         if not self.llm_endpoint:
-            raise ValueError("LANGGRAPH_LLM_ENDPOINT environment variable must be set for embedding_reranker mode")
+            raise ValueError("EXECUTING_LLM_BASE_URL environment variable must be set for embedding_reranker mode")
         
         query = self._extract_query(messages)
         if not query:
@@ -456,9 +457,10 @@ Example: [2, 0, 4]
 
 Response (JSON array only):"""
         
+        rerank_model = os.getenv("EXECUTING_LLM_MODEL", "openai/gpt-oss-120b")
         payload = {
             "messages": [{"role": "user", "content": rerank_prompt}],
-            "model": "deepseek-chat",
+            "model": rerank_model,
             "temperature": 0.0,
             "top_p": 1.0,
         }
@@ -926,7 +928,7 @@ class OpenAIEmbeddingContextWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRe
     """Strategy 7: OpenAI embedding-based retrieval with full conversation context + LLM reranking.
     
     Uses OpenAI embeddings for initial retrieval based on complete conversation history,
-    then reranks with DeepSeek LLM. Allows the LLM to exclude irrelevant tools.
+    then reranks with local LLM. Allows the LLM to exclude irrelevant tools.
     
     Retrieval phase: Embed full conversation history to get top-k candidates
     Reranking phase: LLM reorders candidates considering full context and can exclude irrelevant ones
@@ -941,8 +943,9 @@ class OpenAIEmbeddingContextWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRe
             tools_file=tools_file, 
             schema_cache_file=schema_cache_file
         )
-        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
-        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        _base = os.getenv("EXECUTING_LLM_BASE_URL", "")
+        self.llm_endpoint = (_base.rstrip("/") + "/chat/completions") if _base else None
+        self.llm_api_key = os.getenv("EXECUTING_LLM_API_KEY", "EMPTY")
         self.top_k = top_k
         self.initial_k = initial_k
     
@@ -1228,8 +1231,9 @@ class Qwen3EmbeddingWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRerankerTo
             tools_file=tools_file,
             schema_cache_file=schema_cache_file,
         )
-        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
-        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        _base = os.getenv("EXECUTING_LLM_BASE_URL", "")
+        self.llm_endpoint = (_base.rstrip("/") + "/chat/completions") if _base else None
+        self.llm_api_key = os.getenv("EXECUTING_LLM_API_KEY", "EMPTY")
         self.top_k = top_k
         self.initial_k = initial_k
 
@@ -1249,8 +1253,9 @@ class Qwen3EmbeddingContextWithLLMRerankerToolSelector(OpenAIEmbeddingContextWit
             tools_file=tools_file,
             schema_cache_file=schema_cache_file,
         )
-        self.llm_endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
-        self.llm_api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+        _base = os.getenv("EXECUTING_LLM_BASE_URL", "")
+        self.llm_endpoint = (_base.rstrip("/") + "/chat/completions") if _base else None
+        self.llm_api_key = os.getenv("EXECUTING_LLM_API_KEY", "EMPTY")
         self.top_k = top_k
         self.initial_k = initial_k
 
@@ -1273,17 +1278,21 @@ def _invoke_llm(messages: list, tools: list = None):
     
     Returns: (content, tool_calls) tuple
     """
-    endpoint = os.getenv("LANGGRAPH_LLM_ENDPOINT")
-    api_key = os.getenv("LANGGRAPH_LLM_API_KEY")
+    base_url = os.getenv("EXECUTING_LLM_BASE_URL")
+    api_key = os.getenv("EXECUTING_LLM_API_KEY", "EMPTY")
+    model = os.getenv("EXECUTING_LLM_MODEL", "openai/gpt-oss-120b")
     
-    if not endpoint:
+    if not base_url:
         # Simulated response for testing without a real LLM
         joined = "\n".join([str(m) for m in messages])
         return f"[simulated response] received {len(messages)} messages: {joined[:200]}", []
 
+    # Build full chat completions endpoint from base URL
+    endpoint = base_url.rstrip("/") + "/chat/completions"
+
     payload = {
         "messages": messages,
-        "model": "deepseek-chat",  # Required by DeepSeek API
+        "model": model,
         "temperature": 0.0,
         "top_p": 1.0,
     }
@@ -1300,6 +1309,7 @@ def _invoke_llm(messages: list, tools: list = None):
         headers["Authorization"] = f"Bearer {api_key}"
 
     print(f"[DEBUG] Sending LLM request to {endpoint}")
+    print(f"[DEBUG] Model: {model}")
     print(f"[DEBUG] Payload keys: {list(payload.keys())}")
     print(f"[DEBUG] Messages: {len(messages)}, Tools: {len(tools or [])}")
 
@@ -1345,6 +1355,7 @@ def _invoke_llm(messages: list, tools: list = None):
         raise RuntimeError(f"LLM request failed: {exc.code} {exc.reason} - {error_data[:200]}")
     except urllib.error.URLError as exc:
         print(f"[ERROR] LLM URL Error: {exc.reason}")
+        print(f"[ERROR] Make sure EXECUTING_LLM_BASE_URL is set and the vLLM server is running")
         raise RuntimeError(f"LLM request failed: {exc.reason}")
 
 
@@ -1538,9 +1549,10 @@ def run(host="127.0.0.1", port=8001):
     print(f"LangGraph local server listening at http://{host}:{port}/execute")
     print(f"{'='*70}")
     print(f"Tool Selection Mode: {_default_mode}")
-    print(f"\nLLM Configuration:")
-    print(f"  LANGGRAPH_LLM_ENDPOINT: {os.getenv('LANGGRAPH_LLM_ENDPOINT', 'NOT SET')}")
-    print(f"  LANGGRAPH_LLM_API_KEY: {'***SET***' if os.getenv('LANGGRAPH_LLM_API_KEY') else 'NOT SET'}")
+    print(f"\nExecuting LLM Configuration:")
+    print(f"  EXECUTING_LLM_BASE_URL: {os.getenv('EXECUTING_LLM_BASE_URL', 'NOT SET')}")
+    print(f"  EXECUTING_LLM_MODEL: {os.getenv('EXECUTING_LLM_MODEL', 'openai/gpt-oss-120b (default)')}")
+    print(f"  EXECUTING_LLM_API_KEY: {'***SET***' if os.getenv('EXECUTING_LLM_API_KEY') else 'EMPTY (default)'}")
     print(f"\nAvailable modes:")
     print(f"  1. 'in_context' - LLM decides which tools to use (default)")
     print(f"  2. 'hierarchical' - Smaller LLM selects relevant tools first")

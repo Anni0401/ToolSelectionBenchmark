@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tool Quality Check - Similarity Analysis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        :root {
+            --bg: #0f1118;
+            --bg2: #161b22;
+            --bg3: #21262d;
+            --card: #0d1117;
+            --border: rgba(48, 54, 61, 0.6);
+            --border-light: rgba(48, 54, 61, 0.3);
+            --text: #c9d1d9;
+            --text2: #8b949e;
+            --text3: #6e7681;
+            --pri: #58a6ff;
+            --pri-dark: #1f6feb;
+            --acc: #79c0ff;
+            --green: #3fb950;
+            --yellow: #d29922;
+            --red: #f85149;
+            --purple: #bc8ef9;
+            --cyan: #56d4ff;
+            --font: 'Inter', -apple-system, sans-serif;
+            --mono: 'Monaco', 'Menlo', monospace;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            font-family: var(--font);
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container { 
+            max-width: 1600px; 
+            margin: 0 auto; 
+            padding: 24px; 
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            margin-bottom: 32px;
+            border-bottom: 1px solid var(--border-light);
+            padding-bottom: 24px;
+        }
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--red), var(--yellow));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header p { 
+            color: var(--text2); 
+            font-size: 0.95rem; 
+            margin-bottom: 12px;
+        }
+
+        /* Stats */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .stat {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+        .stat .value { font-size: 1.5rem; font-weight: 700; color: var(--pri); }
+        .stat .label { font-size: 0.75rem; color: var(--text2); margin-top: 4px; }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .search-box {
+            flex: 1;
+            min-width: 250px;
+            position: relative;
+        }
+        .search-box input {
+            width: 100%;
+            padding: 8px 12px 8px 36px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+        .search-box input::placeholder { color: var(--text3); }
+        .search-box i { 
+            position: absolute; 
+            left: 12px; 
+            top: 50%; 
+            transform: translateY(-50%);
+            color: var(--text3);
+            pointer-events: none;
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 8px;
+        }
+        .filter-btn {
+            padding: 8px 16px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.3s;
+        }
+        .filter-btn:hover {
+            border-color: var(--pri);
+            background: rgba(88, 166, 255, 0.1);
+        }
+        .filter-btn.active {
+            background: var(--pri);
+            color: white;
+            border-color: var(--pri);
+        }
+
+        /* Tools Grid */
+        .tools-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(800px, 1fr));
+            gap: 20px;
+        }
+
+        .tool-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            transition: all 0.3s;
+        }
+        .tool-card:hover {
+            border-color: var(--pri);
+            background: rgba(88, 166, 255, 0.02);
+        }
+
+        .tool-header {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tool-badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .tool-badge.original {
+            background: rgba(63, 185, 80, 0.2);
+            color: var(--green);
+        }
+        .tool-badge.synthetic {
+            background: rgba(217, 153, 34, 0.2);
+            color: var(--yellow);
+        }
+
+        .tool-name {
+            font-weight: 600;
+            font-size: 0.95rem;
+            flex: 1;
+            word-break: break-word;
+        }
+
+        .tool-description {
+            font-size: 0.8rem;
+            color: var(--text2);
+            margin-bottom: 12px;
+            max-height: 100px;
+            overflow: hidden;
+            line-height: 1.4;
+        }
+
+        .similar-tools {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .similar-tool {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px;
+            background: var(--bg2);
+            border-radius: 6px;
+            border-left: 3px solid var(--border);
+        }
+
+        .similar-tool.cross-type { border-left-color: var(--red); }
+        .similar-tool.same-type { border-left-color: var(--pri); }
+
+        .rank {
+            font-weight: 700;
+            color: var(--text2);
+            min-width: 24px;
+            text-align: center;
+        }
+
+        .similarity-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .bar {
+            height: 6px;
+            background: var(--bg3);
+            border-radius: 3px;
+            overflow: hidden;
+            flex: 1;
+            min-width: 60px;
+        }
+
+        .bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--pri), var(--cyan));
+            border-radius: 3px;
+        }
+
+        .bar-fill.warning {
+            background: linear-gradient(90deg, var(--yellow), var(--red));
+        }
+
+        .similarity-value {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--pri);
+            min-width: 50px;
+            text-align: right;
+        }
+
+        .neighbor-name {
+            font-size: 0.85rem;
+            font-weight: 500;
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+
+        .neighbor-type {
+            font-size: 0.7rem;
+            color: var(--text3);
+            white-space: nowrap;
+            flex: 0 0 auto;
+        }
+
+        .warning-msg {
+            font-size: 0.75rem;
+            color: var(--red);
+            margin-top: 8px;
+            padding: 6px;
+            background: rgba(248, 81, 73, 0.1);
+            border-radius: 4px;
+            display: none;
+        }
+
+        .warning-msg.show { display: block; }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--text2);
+        }
+        .empty-state i { font-size: 3rem; margin-bottom: 16px; opacity: 0.5; }
+
+        /* Back link */
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 24px;
+            padding: 8px 12px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--pri);
+            text-decoration: none;
+            transition: all 0.3s;
+            font-size: 0.9rem;
+        }
+        .back-link:hover {
+            border-color: var(--pri);
+            background: rgba(88, 166, 255, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="tool-analyzer.html" class="back-link">
+            <i class="fas fa-arrow-left"></i> Back to Tool Analysis
+        </a>
+
+        <div class="header">
+            <h1><i class="fas fa-stethoscope"></i> Quality Check: Tool Similarity Analysis</h1>
+            <p>Review the 5 most similar tools for each tool to identify potential duplicates or semantic conflicts.</p>
+            <div class="stats">
+                <div class="stat">
+                    <div class="value" id="totalCount">0</div>
+                    <div class="label">Total Tools</div>
+                </div>
+                <div class="stat">
+                    <div class="value" id="originalCount">0</div>
+                    <div class="label">Original Tools</div>
+                </div>
+                <div class="stat">
+                    <div class="value" id="syntheticCount">0</div>
+                    <div class="label">Synthetic Tools</div>
+                </div>
+                <div class="stat">
+                    <div class="value" id="warningCount">0</div>
+                    <div class="label">High Similarity Warnings</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="search-box">
+                <i class="fas fa-search"></i>
+                <input type="text" id="searchInput" placeholder="Search tools by name..." />
+            </div>
+            <div class="filter-group">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="original">Original</button>
+                <button class="filter-btn" data-filter="synthetic">Synthetic</button>
+                <button class="filter-btn" data-filter="warnings">⚠️ Warnings</button>
+            </div>
+        </div>
+
+        <div id="toolsContainer" class="tools-grid">
+            <div class="empty-state">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading tools...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let allTools = [];
+        let filteredTools = [];
+        let currentFilter = 'all';
+        let warningCount = 0;
+
+        async function initializeData() {
+            try {
+                // Fetch the combined neighbors CSV (original + synthetic tools)
+                const response = await fetch('../analysis_embeddings/tools_en_all_neighbors.csv');
+                if (!response.ok) throw new Error(`Failed to load data: ${response.status}`);
+                
+                const csv_text = await response.text();
+                const lines = csv_text.trim().split('\n');
+                const headers = lines[0].split(',').map(h => h.trim());
+                
+                // Parse CSV
+                const neighborsData = [];
+                const toolMap = new Map(); // tool_name -> { type, info }
+                
+                for (let i = 1; i < lines.length; i++) {
+                    const values = lines[i].split(',').map(v => v.trim());
+                    if (values.length < 6) continue;
+                    
+                    const row = {
+                        tool_name: values[0],
+                        tool_type: values[1],
+                        neighbor_name: values[2],
+                        neighbor_type: values[3],
+                        similarity: parseFloat(values[4]),
+                        rank: parseInt(values[5])
+                    };
+                    
+                    neighborsData.push(row);
+                    
+                    // Track tools
+                    if (!toolMap.has(row.tool_name)) {
+                        toolMap.set(row.tool_name, {
+                            type: row.tool_type,
+                            neighbors: []
+                        });
+                    }
+                }
+                
+                // Group neighbors by tool
+                const toolsWithNeighbors = new Map();
+                for (const row of neighborsData) {
+                    if (!toolsWithNeighbors.has(row.tool_name)) {
+                        toolsWithNeighbors.set(row.tool_name, []);
+                    }
+                    toolsWithNeighbors.get(row.tool_name).push({
+                        name: row.neighbor_name,
+                        type: row.neighbor_type,
+                        similarity: row.similarity,
+                        rank: row.rank
+                    });
+                }
+                
+                // Create tool list with metadata
+                allTools = Array.from(toolMap.entries()).map(([name, data]) => ({
+                    _id: name,
+                    _type: data.type,
+                    function: { name: name },
+                    neighbors: (toolsWithNeighbors.get(name) || []).sort((a, b) => a.rank - b.rank)
+                }));
+                
+                console.log(`Loaded ${allTools.length} tools with similarity data`);
+                
+                updateStats();
+                renderTools(allTools);
+                
+            } catch (error) {
+                console.error('Error loading data:', error);
+                document.getElementById('toolsContainer').innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>Error loading data: ${error.message}</p>
+                        <p style="font-size: 0.85rem; margin-top: 12px;">Make sure <code>analyze_all_tools_quality.py</code> has completed and generated <code>analysis_embeddings/tools_en_all_neighbors.csv</code></p>
+                    </div>
+                `;
+            }
+        }
+
+        function updateStats() {
+            const origCount = allTools.filter(t => t._type === 'original').length;
+            const synthCount = allTools.filter(t => t._type === 'synthetic').length;
+            
+            document.getElementById('totalCount').textContent = allTools.length;
+            document.getElementById('originalCount').textContent = origCount;
+            document.getElementById('syntheticCount').textContent = synthCount;
+        }
+
+        function getSimilarTools(toolName, toolType) {
+            // Find the tool in allTools and get its pre-grouped neighbors
+            const tool = allTools.find(t => t._id === toolName);
+            return tool ? tool.neighbors : [];
+        }
+
+        function getSimilarToolType(neighborName) {
+            const tool = allTools.find(t => t._id === neighborName);
+            return tool ? tool._type : 'unknown';
+        }
+
+        function renderTools(tools) {
+            const container = document.getElementById('toolsContainer');
+            
+            if (tools.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-inbox"></i>
+                        <p>No tools found</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            warningCount = 0;
+            
+            container.innerHTML = tools.map(tool => {
+                const similar = tool.neighbors || [];
+                
+                // Check for high similarity synthetic-to-original (warning if > 0.95)
+                let hasWarning = false;
+                if (tool._type === 'synthetic') {
+                    hasWarning = similar.some(s => {
+                        return s.type === 'original' && s.similarity > 0.95;
+                    });
+                    if (hasWarning) warningCount++;
+                }
+                
+                return `
+                    <div class="tool-card ${tool._type}" data-has-warning="${hasWarning}">
+                        <div class="tool-header">
+                            <span class="tool-badge ${tool._type}">
+                                ${tool._type === 'original' ? '📦 Original' : '✨ Synthetic'}
+                            </span>
+                            <span class="tool-name">${tool._id}</span>
+                        </div>
+                        
+                        <div class="tool-description">
+                            ${tool.function.description || 'No description'}
+                        </div>
+                        
+                        ${similar.length > 0 ? `
+                            <div style="font-size: 0.8rem; color: var(--text2); margin-bottom: 8px; font-weight: 600;">
+                                Most Similar (Top ${similar.length}):
+                            </div>
+                            <div class="similar-tools">
+                                ${similar.map((s, idx) => {
+                                    const isCrossType = tool._type !== s.type;
+                                    const isHighSim = s.similarity > 0.95;
+                                    const barClass = isCrossType && isHighSim ? 'warning' : '';
+                                    
+                                    return `
+                                        <div class="similar-tool ${isCrossType ? 'cross-type' : 'same-type'}">
+                                            <span class="rank">#${s.rank}</span>
+                                            <div class="similarity-bar">
+                                                <div class="bar">
+                                                    <div class="bar-fill ${barClass}" style="width: ${s.similarity * 100}%"></div>
+                                                </div>
+                                                <span class="similarity-value">${s.similarity.toFixed(3)}</span>
+                                            </div>
+                                            <span class="neighbor-name">${s.name}</span>
+                                            <span class="neighbor-type">${s.type}</span>
+                                            ${isHighSim && isCrossType ? '<span title="High similarity across types">⚠️</span>' : ''}
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        ` : `
+                            <div class="similar-tools">
+                                <div style="text-align: center; color: var(--text3); padding: 12px; font-size: 0.85rem;">
+                                    No similar tools found
+                                </div>
+                            </div>
+                        `}
+                        
+                        ${hasWarning ? `
+                            <div class="warning-msg show">
+                                <i class="fas fa-exclamation-circle"></i> Synthetic tool has high similarity (>0.95) to original tool
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+            
+            document.getElementById('warningCount').textContent = warningCount;
+        }
+
+        function filterTools() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            
+            filteredTools = allTools.filter(tool => {
+                const matchesSearch = tool.function.name.toLowerCase().includes(searchTerm) ||
+                                     (tool.function.description || '').toLowerCase().includes(searchTerm);
+                
+                if (currentFilter === 'all') return matchesSearch;
+                if (currentFilter === 'original') return tool._type === 'original' && matchesSearch;
+                if (currentFilter === 'synthetic') return tool._type === 'synthetic' && matchesSearch;
+                if (currentFilter === 'warnings') {
+                    if (tool._type !== 'synthetic') return false;
+                    const similar = getSimilarTools(tool._id, tool._type);
+                    const hasWarning = similar.some(s => {
+                        const neighborType = getSimilarToolType(s.name);
+                        return neighborType === 'original' && s.similarity > 0.95;
+                    });
+                    return hasWarning && matchesSearch;
+                }
+                
+                return matchesSearch;
+            });
+            
+            renderTools(filteredTools);
+        }
+
+        // Event listeners
+        document.getElementById('searchInput').addEventListener('input', filterTools);
+        
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                currentFilter = e.target.dataset.filter;
+                filterTools();
+            });
+        });
+
+        // Initialize on load
+        initializeData();
+    </script>
+</body>
+</html>

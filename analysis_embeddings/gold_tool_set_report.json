@@ -1,0 +1,9 @@
+{
+  "original_before_dedup": 1248,
+  "synthetic_before_dedup": 1527,
+  "original_after_dedup": 618,
+  "synthetic_after_dedup": 1324,
+  "final_original_count": 618,
+  "final_synthetic_count": 1065,
+  "final_total_count": 1683
+}

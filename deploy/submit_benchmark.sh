@@ -10,12 +10,15 @@
 #   bash deploy/submit_benchmark.sh <MODE> [OPTIONS]
 #
 # Selection modes:
-#   in_context                        No auxiliary server (baseline)
-#   hierarchical                      Qwen3-30B-A3B selector LLM (A40×2)
-#   qwen3_embedding                   Qwen3-Embedding-8B, query only (A40×1)
-#   qwen3_embedding_context           Qwen3-Embedding-8B, full context (A40×1)
-#   qwen3_embedding_reranker          Qwen3-Embedding-8B + gpt-oss reranking (A40×1)
-#   qwen3_embedding_context_reranker  …context variant (A40×1)
+#   in_context                                 No auxiliary server (baseline)
+#   hierarchical                               Qwen3-30B-A3B selector LLM (A40×2)
+#   qwen3_embedding                            Qwen3-Embedding-8B, query only (A40×1)
+#   qwen3_embedding_context                    Qwen3-Embedding-8B, full context (A40×1)
+#   qwen3_embedding_reranker                   Qwen3-Embedding-8B + gpt-oss reranking (A40×1)
+#   qwen3_embedding_context_reranker           …context variant (A40×1)
+#   qwen3_reranker                             Qwen3-Reranker-8B standalone (A40×1)
+#   qwen3_embedding_qwen3_reranker             Qwen3-Embedding-8B + Qwen3-Reranker-8B (A40×2)
+#   qwen3_embedding_context_qwen3_reranker     …context variant (A40×2)
 #
 # Options:
 #   --time-exec <HH:MM:SS>   Wall time for the executing LLM job (default: 24:00:00)
@@ -25,8 +28,10 @@
 # Job topology:
 #   in_context:  single H200×4 job  (gptoss + LangGraph app + benchmark)
 #   all others:  H200×4 job         (gptoss server, stays alive until runner finishes)
-#              + A40 job            (aux vLLM server + LangGraph app + benchmark;
+#              + A40×1 or A40×2 job (aux vLLM server(s) + LangGraph app + benchmark;
 #                                    cancels H200 job on exit)
+#              A40×2 is used for: hierarchical, qwen3_embedding_qwen3_reranker*
+#              A40×1 is used for: all other non-in_context modes
 #
 # The two jobs communicate via a shared directory on the home filesystem:
 #   ~/wtb_runs/<RUN_ID>/config.env          — static config sourced by every job
@@ -46,6 +51,7 @@ if [[ -z "$MODE" ]]; then
     echo ""
     echo "Modes: in_context | hierarchical | qwen3_embedding | qwen3_embedding_context"
     echo "       qwen3_embedding_reranker | qwen3_embedding_context_reranker"
+    echo "       qwen3_reranker | qwen3_embedding_qwen3_reranker | qwen3_embedding_context_qwen3_reranker"
     exit 1
 fi
 
@@ -66,12 +72,14 @@ done
 # ── Validate mode ─────────────────────────────────────────────────────────────
 case "$MODE" in
     in_context|hierarchical|qwen3_embedding|qwen3_embedding_context|\
-    qwen3_embedding_reranker|qwen3_embedding_context_reranker)
+    qwen3_embedding_reranker|qwen3_embedding_context_reranker|\
+    qwen3_reranker|qwen3_embedding_qwen3_reranker|qwen3_embedding_context_qwen3_reranker)
         : ;;  # valid
     *)
         echo "[ERROR] Unknown mode: ${MODE}"
         echo "Valid modes: in_context | hierarchical | qwen3_embedding | qwen3_embedding_context"
         echo "             qwen3_embedding_reranker | qwen3_embedding_context_reranker"
+        echo "             qwen3_reranker | qwen3_embedding_qwen3_reranker | qwen3_embedding_context_qwen3_reranker"
         exit 1 ;;
 esac
 
@@ -151,6 +159,9 @@ echo "EXEC_JID=${EXEC_JID}" >> "${RUN_DIR}/config.env"
 # hierarchical needs A40×2 for Qwen3-30B-A3B ≈ 60 GB.
 case "$MODE" in
     hierarchical)
+        AUX_GRES_OVERRIDE="--gres=gpu:A40:2 --mem=96G"
+        ;;
+    qwen3_embedding_qwen3_reranker | qwen3_embedding_context_qwen3_reranker)
         AUX_GRES_OVERRIDE="--gres=gpu:A40:2 --mem=96G"
         ;;
     *)

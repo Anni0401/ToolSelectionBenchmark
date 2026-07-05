@@ -1,10 +1,10 @@
 # LangGraph Tool Selection Modes
 
-This document describes the four tool selection strategies available in the LangGraph plugin.
+This document describes the tool selection strategies available in the LangGraph plugin.
 
 ## Overview
 
-The LangGraph plugin supports 4 different tool selection modes to control how tools are selected before being passed to the LLM. Each mode has different trade-offs in terms of cost, latency, and accuracy.
+The LangGraph plugin supports multiple tool selection modes to control how tools are selected before being passed to the LLM. Each mode has different trade-offs in terms of cost, latency, and accuracy.
 
 ## Modes
 
@@ -136,6 +136,53 @@ export LANGGRAPH_SELECTOR_LLM_API_KEY=sk-...
 
 ---
 
+### 5. Qwen3-Reranker Pairwise Reranking
+
+**Mode name:** `qwen3_embedding_qwen3_reranker`
+
+Two-stage pipeline using Qwen3-Embedding-8B for fast candidate retrieval followed by Qwen3-Reranker-8B for precise pairwise relevance scoring. Each (query, tool) pair is independently scored by the cross-encoder reranker, producing calibrated relevance probabilities.
+
+**Pros:**
+- Highest relevance accuracy — cross-encoder scoring outperforms bi-encoder similarity
+- Pairwise scoring is independent per tool (no prompt formatting quirks)
+- Score endpoint enables efficient batch scoring in a single request
+- Fallback to chat completions + logprobs if deployed in generation mode
+
+**Cons:**
+- Requires two separate model endpoints (embedding + reranker)
+- More API calls than pure embedding approaches
+- Highest infrastructure complexity
+
+**Configuration:**
+```bash
+# Recommended: deploy reranker with --task score for batch scoring
+export LANGGRAPH_TOOL_SELECTION_MODE=qwen3_embedding_qwen3_reranker
+export QWEN3_EMBEDDING_BASE_URL=http://localhost:8001/v1
+export QWEN3_EMBEDDING_API_KEY=EMPTY
+export QWEN3_RERANKER_BASE_URL=http://localhost:8002/v1
+export QWEN3_RERANKER_API_KEY=EMPTY
+```
+
+**Variant with full conversation context** (`qwen3_embedding_context_qwen3_reranker`): uses the complete multi-turn conversation history for both embedding retrieval and reranker query, improving accuracy in multi-turn interactions.
+
+**Standalone reranker** (`qwen3_reranker`): applies Qwen3-Reranker-8B directly to a pre-supplied tool list without an embedding retrieval stage.
+
+**vLLM deployment for the reranker:**
+```bash
+# Score mode (recommended — enables /v1/score batch endpoint)
+vllm serve Qwen/Qwen3-Reranker-8B --task score --port 8002
+
+# Generation mode (fallback — uses chat completions + logprobs)
+vllm serve Qwen/Qwen3-Reranker-8B --port 8002
+```
+
+**When to use:**
+- Large tool sets (100-500+ tools) where top-k accuracy is critical
+- Multi-turn conversations requiring context-aware tool selection
+- When you have GPU resources for two inference endpoints
+
+---
+
 ## Configuration
 
 ### Environment Variables
@@ -151,6 +198,12 @@ export LANGGRAPH_SELECTOR_LLM_API_KEY=sk-...
 | `LANGGRAPH_SELECTOR_LLM_API_KEY` | Selector LLM auth | No | - |
 | `LANGGRAPH_EMBEDDING_ENDPOINT` | Embedding endpoint (embedding/reranker) | Conditional | - |
 | `LANGGRAPH_EMBEDDING_API_KEY` | Embedding auth | No | - |
+| `QWEN3_EMBEDDING_BASE_URL` | Qwen3-Embedding-8B vLLM base URL | Conditional | `http://localhost:8001/v1` |
+| `QWEN3_EMBEDDING_API_KEY` | Qwen3-Embedding-8B API key | No | `EMPTY` |
+| `QWEN3_EMBEDDING_MODEL` | Qwen3-Embedding model name | No | `Qwen/Qwen3-Embedding-8B` |
+| `QWEN3_RERANKER_BASE_URL` | Qwen3-Reranker-8B vLLM base URL | Conditional | `http://localhost:8002/v1` |
+| `QWEN3_RERANKER_API_KEY` | Qwen3-Reranker-8B API key | No | `EMPTY` |
+| `QWEN3_RERANKER_MODEL` | Qwen3-Reranker model name | No | `Qwen/Qwen3-Reranker-8B` |
 | `LANGGRAPH_HOST` | Server host | No | `127.0.0.1` |
 | `LANGGRAPH_PORT` | Server port | No | `8001` |
 
@@ -172,15 +225,15 @@ You can also override the mode per-request by including it in the request payloa
 
 ## Comparison Table
 
-| Metric | In-Context | Hierarchical | Embedding | Embedding + Rerank |
-|--------|-----------|--------------|-----------|-------------------|
-| Tool Set Size | Small (< 20) | Medium (50-200) | Large (200+) | Large (100-500) |
-| Latency | Very Low | Medium | Very Low | Low |
-| Accuracy | High | Medium | Medium | High |
-| Cost | High | Low | Very Low | Low |
-| Infrastructure | Simple | Moderate | Moderate | Complex |
-| Sequential Calls | 1 | 2 | 0 | 1 |
-| Scalability | Poor | Good | Excellent | Excellent |
+| Metric | In-Context | Hierarchical | Embedding | Embedding + LLM Rerank | Embedding + Qwen3 Rerank |
+|--------|-----------|--------------|-----------|------------------------|--------------------------|
+| Tool Set Size | Small (< 20) | Medium (50-200) | Large (200+) | Large (100-500) | Large (100-500) |
+| Latency | Very Low | Medium | Very Low | Low | Low–Medium |
+| Accuracy | High | Medium | Medium | High | Highest |
+| Cost | High | Low | Very Low | Low | Low |
+| Infrastructure | Simple | Moderate | Moderate | Complex | Complex |
+| Sequential Calls | 1 | 2 | 0 | 1 | 1 (batch) / N (fallback) |
+| Scalability | Poor | Good | Excellent | Excellent | Excellent |
 
 ---
 

@@ -1271,6 +1271,287 @@ class Qwen3EmbeddingContextWithLLMRerankerToolSelector(OpenAIEmbeddingContextWit
         return full_conversation[:2000] if full_conversation else ""
 
 
+# ==================== Qwen3 Reranker Strategies ====================
+
+class Qwen3RerankerBasedToolSelector(ToolSelector):
+    """Pairwise reranker using Qwen3-Reranker-8B.
+
+    Scores each (query, tool) pair using the Qwen3-Reranker-8B model deployed
+    via vLLM.  Supports two deployment modes:
+
+    * **Score mode** (recommended): Deploy the vLLM server with ``--task score``
+      and call the ``/v1/score`` endpoint for efficient batch scoring.
+    * **Generation mode** (fallback): Deploy as a standard chat model and
+      extract the log-probability of the "Yes" token from the first generated
+      token, formatted with the Qwen3-Reranker chat template.
+
+    Environment Variables:
+        QWEN3_RERANKER_BASE_URL: vLLM base URL (default: http://localhost:8002/v1)
+        QWEN3_RERANKER_API_KEY:  API key (default: EMPTY)
+        QWEN3_RERANKER_MODEL:    Model name (default: Qwen/Qwen3-Reranker-8B)
+    """
+
+    TASK_INSTRUCTION = (
+        "Given a user query about tool usage, retrieve the most relevant tool "
+        "function that can fulfill the described task."
+    )
+
+    SYSTEM_PROMPT = (
+        "Judge whether the Document meets the requirements based on the Query and "
+        "the Instruct provided. Note only the last point is sufficient, the "
+        "information above can be incomplete."
+    )
+
+    def __init__(self, top_k: int = 5):
+        self.top_k = top_k
+        self.base_url = os.getenv("QWEN3_RERANKER_BASE_URL", "http://localhost:8002/v1")
+        self.api_key = os.getenv("QWEN3_RERANKER_API_KEY", "EMPTY")
+        self.model = os.getenv("QWEN3_RERANKER_MODEL", "Qwen/Qwen3-Reranker-8B")
+
+    def select(self, messages: list, tools: list) -> list:
+        """Select top-k tools using Qwen3-Reranker-8B pairwise scoring."""
+        if not tools:
+            return []
+        query = self._extract_query(messages)
+        if not query:
+            raise ValueError("No user query found for Qwen3-Reranker tool selection")
+        reranked = self._rerank_with_qwen3(query, tools)
+        return reranked[:self.top_k]
+
+    def _extract_query(self, messages: list) -> str:
+        """Extract the latest user query."""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content[:1000]
+        return ""
+
+    def _format_document(self, tool: dict) -> str:
+        """Render a tool definition as a plain-text document for the reranker."""
+        func = tool.get("function", {})
+        name = func.get("name", "")
+        desc = func.get("description", "")
+        params = func.get("parameters", {})
+        props = params.get("properties", {})
+        param_strs = []
+        for p_name, p_info in list(props.items())[:5]:
+            p_desc = p_info.get("description", "")
+            param_strs.append(f"  {p_name}: {p_desc}" if p_desc else f"  {p_name}")
+        doc = f"Tool: {name}\nDescription: {desc}"
+        if param_strs:
+            doc += "\nParameters:\n" + "\n".join(param_strs)
+        return doc
+
+    def _score_batch_via_score_endpoint(self, query: str, tool_docs: list) -> list:
+        """Batch-score via vLLM /v1/score endpoint (--task score deployment).
+
+        Returns a list of float scores, one per document, in input order.
+        Raises an exception if the endpoint is unavailable or returns an error.
+        """
+        endpoint = self.base_url.rstrip("/") + "/score"
+        payload = {
+            "model": self.model,
+            "text_1": query,
+            "text_2": tool_docs,
+            "encoding_format": "float",
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if self.api_key and self.api_key != "EMPTY":
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        scores_data = data.get("data", [])
+        scores_data.sort(key=lambda x: x.get("index", 0))
+        return [float(item.get("score", 0.0)) for item in scores_data]
+
+    def _score_single_via_chat_completions(self, query: str, tool_doc: str) -> float:
+        """Score a single (query, tool) pair via chat completions + logprobs.
+
+        Formats the input with the Qwen3-Reranker chat template and extracts
+        the log-probability of the 'yes' token from the first generated token.
+        Falls back to text matching if logprobs are unavailable.
+        """
+        import math
+
+        user_content = (
+            f"<Instruct>: {self.TASK_INSTRUCTION}\n"
+            f"<Query>: {query}\n"
+            f"<Document>: {tool_doc}\n"
+            "Does the Document meet the requirements? Respond with 'Yes' or 'No'."
+        )
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+
+        endpoint = self.base_url.rstrip("/") + "/chat/completions"
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": 1,
+            "temperature": 0.0,
+            "logprobs": True,
+            "top_logprobs": 20,
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if self.api_key and self.api_key != "EMPTY":
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            parsed = json.loads(resp.read().decode("utf-8"))
+
+        choices = parsed.get("choices", [])
+        if not choices:
+            return 0.0
+
+        choice = choices[0]
+
+        # Try logprobs first (most accurate)
+        logprobs_data = choice.get("logprobs") or {}
+        content_logprobs = logprobs_data.get("content") or []
+        if content_logprobs:
+            top_lps = content_logprobs[0].get("top_logprobs") or []
+            for lp in top_lps:
+                token = (lp.get("token") or "").strip().lower()
+                if token in ("yes", "y"):
+                    return math.exp(lp["logprob"])
+            # No "yes" token found — use 1 - P(no) if "no" is present
+            for lp in top_lps:
+                token = (lp.get("token") or "").strip().lower()
+                if token in ("no", "n"):
+                    return max(0.0, 1.0 - math.exp(lp["logprob"]))
+
+        # Fallback: text matching
+        generated = (choice.get("message") or {}).get("content", "")
+        return 1.0 if generated.strip().lower().startswith("y") else 0.0
+
+    def _rerank_with_qwen3(self, query: str, tools: list) -> list:
+        """Score all candidate tools and return them sorted by descending relevance score."""
+        tool_docs = [self._format_document(t) for t in tools]
+        scores = None
+
+        # Attempt 1: batch scoring via /v1/score endpoint
+        try:
+            scores = self._score_batch_via_score_endpoint(query, tool_docs)
+            print(f"\n[QWEN3 RERANKER] Used /v1/score endpoint (batch, {len(tools)} tools)")
+        except Exception as exc:
+            print(
+                f"[QWEN3 RERANKER] /v1/score endpoint unavailable ({exc}); "
+                "falling back to chat completions + logprobs"
+            )
+
+        # Attempt 2: per-tool chat completions with logprobs
+        if scores is None:
+            scores = []
+            for i, tool_doc in enumerate(tool_docs):
+                try:
+                    score = self._score_single_via_chat_completions(query, tool_doc)
+                    scores.append(score)
+                except Exception as exc:
+                    print(f"[QWEN3 RERANKER] Failed to score tool {i}: {exc}")
+                    scores.append(0.0)
+
+        print(f"\n[QWEN3 RERANKER SELECTOR]")
+        print(f"  Model: {self.model}")
+        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Candidates scored: {len(tools)}")
+
+        ranked_pairs = sorted(zip(scores, tools), key=lambda x: x[0], reverse=True)
+        print(f"  Top-{min(self.top_k, len(ranked_pairs))} after reranking:")
+        for i, (score, tool) in enumerate(ranked_pairs[:self.top_k]):
+            tool_name = tool.get("function", {}).get("name", "unknown")
+            print(f"    {i+1}. {tool_name} (score: {score:.4f})")
+        print()
+
+        return [t for _, t in ranked_pairs]
+
+
+class Qwen3EmbeddingWithQwen3RerankerToolSelector(Qwen3RerankerBasedToolSelector):
+    """Strategy 12: Qwen3-Embedding-8B retrieval + Qwen3-Reranker-8B pairwise reranking.
+
+    Two-stage pipeline:
+      1. **Embedding retrieval** – Qwen3-Embedding-8B narrows the full tool set to
+         ``initial_k`` candidates using dense vector similarity.
+      2. **Pairwise reranking** – Qwen3-Reranker-8B cross-encodes each (query, tool)
+         pair and ranks candidates by relevance score.
+
+    Environment Variables (embedding stage):
+        QWEN3_EMBEDDING_BASE_URL: vLLM base URL (default: http://localhost:8001/v1)
+        QWEN3_EMBEDDING_API_KEY:  API key (default: EMPTY)
+        QWEN3_EMBEDDING_MODEL:    Model name (default: Qwen/Qwen3-Embedding-8B)
+    Environment Variables (reranking stage):
+        QWEN3_RERANKER_BASE_URL: vLLM base URL (default: http://localhost:8002/v1)
+        QWEN3_RERANKER_API_KEY:  API key (default: EMPTY)
+        QWEN3_RERANKER_MODEL:    Model name (default: Qwen/Qwen3-Reranker-8B)
+    """
+
+    def __init__(self, top_k: int = 5, initial_k: int = 20, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        super().__init__(top_k=top_k)
+        self.initial_k = initial_k
+        self.embedding_selector = Qwen3EmbeddingBasedToolSelector(
+            top_k=initial_k,
+            cache_file=cache_file,
+            tools_file=tools_file,
+            schema_cache_file=schema_cache_file,
+        )
+
+    def select(self, messages: list, tools: list) -> list:
+        """Embedding retrieval → Qwen3-Reranker pairwise scoring."""
+        candidates = self.embedding_selector.select(messages, tools)
+
+        if len(candidates) <= self.top_k:
+            return candidates
+
+        query = self._extract_query(messages)
+        if not query:
+            raise ValueError("No user query found for Qwen3-Reranker tool selection")
+
+        reranked = self._rerank_with_qwen3(query, candidates)
+        return reranked[:self.top_k]
+
+
+class Qwen3EmbeddingContextWithQwen3RerankerToolSelector(Qwen3EmbeddingWithQwen3RerankerToolSelector):
+    """Strategy 13: Qwen3-Embedding-8B (full context) + Qwen3-Reranker-8B pairwise reranking.
+
+    Same as ``Qwen3EmbeddingWithQwen3RerankerToolSelector`` but uses the full
+    multi-turn conversation history for both the embedding retrieval phase and
+    as the reranker query, giving better accuracy in multi-turn interactions.
+    """
+
+    def __init__(self, top_k: int = 5, initial_k: int = 20, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        super().__init__(
+            top_k=top_k, initial_k=initial_k,
+            cache_file=cache_file, tools_file=tools_file,
+            schema_cache_file=schema_cache_file,
+        )
+        self.embedding_selector = Qwen3EmbeddingContextBasedToolSelector(
+            top_k=initial_k,
+            cache_file=cache_file,
+            tools_file=tools_file,
+            schema_cache_file=schema_cache_file,
+        )
+
+    def _extract_query(self, messages: list) -> str:
+        """Use full conversation context as the reranker query."""
+        conversation_parts = []
+        for msg in messages:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                conversation_parts.append(f"[{role}]: {content}")
+        full_conversation = "\n".join(conversation_parts)
+        return full_conversation[:2000] if full_conversation else ""
+
+
 # ==================== LLM Invocation ====================
 
 def _invoke_llm(messages: list, tools: list = None):
@@ -1381,6 +1662,12 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return Qwen3EmbeddingWithLLMRerankerToolSelector(top_k=5, initial_k=10)
     elif mode == "qwen3_embedding_context_reranker":
         return Qwen3EmbeddingContextWithLLMRerankerToolSelector(top_k=5, initial_k=10)
+    elif mode == "qwen3_reranker":
+        return Qwen3RerankerBasedToolSelector(top_k=5)
+    elif mode == "qwen3_embedding_qwen3_reranker":
+        return Qwen3EmbeddingWithQwen3RerankerToolSelector(top_k=5, initial_k=20)
+    elif mode == "qwen3_embedding_context_qwen3_reranker":
+        return Qwen3EmbeddingContextWithQwen3RerankerToolSelector(top_k=5, initial_k=20)
     else:  # default: in_context
         return InContextToolSelector()
 

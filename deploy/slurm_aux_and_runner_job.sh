@@ -59,14 +59,16 @@ echo "=========================================="
 
 # ── Exit trap: cancel exec LLM job and kill background servers ────────────────
 AUX_SERVER_PID=""
+RERANKER_PID=""
 LANGGRAPH_PID=""
 
 _cleanup() {
     local exit_code=$?
     echo ""
     echo "[INFO] Benchmark runner exiting (code ${exit_code}). Cleaning up..."
-    [[ -n "${LANGGRAPH_PID}" ]] && kill "${LANGGRAPH_PID}" 2>/dev/null && echo "[INFO] LangGraph app stopped."
-    [[ -n "${AUX_SERVER_PID}" ]] && kill "${AUX_SERVER_PID}" 2>/dev/null && echo "[INFO] Aux vLLM server stopped."
+    [[ -n "${LANGGRAPH_PID}" ]]   && kill "${LANGGRAPH_PID}"   2>/dev/null && echo "[INFO] LangGraph app stopped."
+    [[ -n "${RERANKER_PID}" ]]    && kill "${RERANKER_PID}"    2>/dev/null && echo "[INFO] Qwen3-Reranker-8B stopped."
+    [[ -n "${AUX_SERVER_PID}" ]]  && kill "${AUX_SERVER_PID}"  2>/dev/null && echo "[INFO] Aux vLLM server stopped."
     if [[ -n "${EXEC_JID:-}" ]]; then
         echo "[INFO] Cancelling exec LLM job ${EXEC_JID} ..."
         scancel "${EXEC_JID}" 2>/dev/null || echo "[WARN] scancel returned non-zero (job may already be finished)."
@@ -118,6 +120,7 @@ _wait_for_http() {
 
 # ── Start auxiliary vLLM server ───────────────────────────────────────────────
 AUX_PORT=8002
+RERANKER_PORT=8003
 
 case "${SELECTION_MODE}" in
     # ── Hierarchical: Qwen3-30B-A3B selector LLM ─────────────────────────────
@@ -156,6 +159,74 @@ case "${SELECTION_MODE}" in
         export QWEN3_EMBEDDING_BASE_URL="http://localhost:${AUX_PORT}/v1"
         export QWEN3_EMBEDDING_MODEL="Qwen/Qwen3-Embedding-8B"
         export QWEN3_EMBEDDING_API_KEY="EMPTY"
+
+        # Pre-warm the embedding cache if it does not exist yet
+        EMBED_CACHE="${PROJECT_ROOT}/wild-tool-bench/wtb/model_handler/api_inference/tool_embeddings_cache_qwen3.json"
+        if [[ ! -f "${EMBED_CACHE}" ]]; then
+            echo "[INFO] Embedding cache not found — pre-warming (this may take ~15 min) ..."
+            cd "${PROJECT_ROOT}/wild-tool-bench"
+            python wtb/model_handler/api_inference/setup_openai_embeddings.py \
+                --provider qwen3 \
+                --tools-file ../multi-agent-framework/tools/tools_en.jsonl
+            cd "${PROJECT_ROOT}"
+            echo "[INFO] Embedding cache ready: ${EMBED_CACHE}"
+        else
+            echo "[INFO] Embedding cache found: ${EMBED_CACHE}"
+        fi
+        ;;
+
+    # ── Qwen3-Reranker-8B standalone (no embedding stage) ────────────────────
+    qwen3_reranker)
+        echo "[INFO] Starting Qwen3-Reranker-8B on port ${AUX_PORT} ..."
+        MODEL_NAME=Qwen/Qwen3-Reranker-8B \
+        VLLM_RERANKER_PORT=${AUX_PORT} \
+        GPU_MEMORY_UTILIZATION=0.80 \
+        DTYPE=float16 \
+            bash "${PROJECT_ROOT}/deploy/slurm_vllm_reranker_deploy.sh" &
+        AUX_SERVER_PID=$!
+
+        _wait_for_http "http://localhost:${AUX_PORT}/v1/models" \
+            "Qwen3-Reranker-8B" 1800
+
+        export QWEN3_RERANKER_BASE_URL="http://localhost:${AUX_PORT}/v1"
+        export QWEN3_RERANKER_MODEL="Qwen/Qwen3-Reranker-8B"
+        export QWEN3_RERANKER_API_KEY="EMPTY"
+        ;;
+
+    # ── Qwen3-Embedding-8B + Qwen3-Reranker-8B two-model setup ───────────────
+    # Both 8B models run on separate GPUs of the same A40×2 node.
+    # GPU 0 → Qwen3-Embedding-8B (port 8002)
+    # GPU 1 → Qwen3-Reranker-8B  (port 8003)
+    qwen3_embedding_qwen3_reranker | qwen3_embedding_context_qwen3_reranker)
+        echo "[INFO] Starting Qwen3-Embedding-8B on GPU 0 / port ${AUX_PORT} ..."
+        CUDA_VISIBLE_DEVICES=0 \
+        MODEL_NAME=Qwen/Qwen3-Embedding-8B \
+        VLLM_EMBEDDING_PORT=${AUX_PORT} \
+        GPU_MEMORY_UTILIZATION=0.80 \
+        DTYPE=float16 \
+            bash "${PROJECT_ROOT}/deploy/slurm_vllm_embedding_deploy.sh" &
+        AUX_SERVER_PID=$!
+
+        echo "[INFO] Starting Qwen3-Reranker-8B on GPU 1 / port ${RERANKER_PORT} ..."
+        CUDA_VISIBLE_DEVICES=1 \
+        MODEL_NAME=Qwen/Qwen3-Reranker-8B \
+        VLLM_RERANKER_PORT=${RERANKER_PORT} \
+        GPU_MEMORY_UTILIZATION=0.80 \
+        DTYPE=float16 \
+            bash "${PROJECT_ROOT}/deploy/slurm_vllm_reranker_deploy.sh" &
+        RERANKER_PID=$!
+
+        _wait_for_http "http://localhost:${AUX_PORT}/v1/models" \
+            "Qwen3-Embedding-8B" 1800
+        _wait_for_http "http://localhost:${RERANKER_PORT}/v1/models" \
+            "Qwen3-Reranker-8B" 1800
+
+        export QWEN3_EMBEDDING_BASE_URL="http://localhost:${AUX_PORT}/v1"
+        export QWEN3_EMBEDDING_MODEL="Qwen/Qwen3-Embedding-8B"
+        export QWEN3_EMBEDDING_API_KEY="EMPTY"
+        export QWEN3_RERANKER_BASE_URL="http://localhost:${RERANKER_PORT}/v1"
+        export QWEN3_RERANKER_MODEL="Qwen/Qwen3-Reranker-8B"
+        export QWEN3_RERANKER_API_KEY="EMPTY"
 
         # Pre-warm the embedding cache if it does not exist yet
         EMBED_CACHE="${PROJECT_ROOT}/wild-tool-bench/wtb/model_handler/api_inference/tool_embeddings_cache_qwen3.json"

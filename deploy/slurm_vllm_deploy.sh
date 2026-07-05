@@ -119,5 +119,6 @@ python -m vllm.entrypoints.openai.api_server \
     --tensor-parallel-size ${TENSOR_PARALLEL_SIZE} \
     --max-num-batched-tokens 4096 \
     --enable-prefix-caching \
+    --enforce-eager \
     --download-dir "${CHECKPOINT_DIR}" \
     2>&1 | tee -a "${LOG_DIR}/vllm_server.log"

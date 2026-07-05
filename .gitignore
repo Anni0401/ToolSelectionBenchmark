@@ -2,3 +2,6 @@
 wild-tool-bench/.env
 multi-agent-framework/.env
 wild-tool-bench/.venv
+
+# Large embedding cache files (>100MB, not suitable for git)
+wild-tool-bench/wtb/model_handler/api_inference/tool_embeddings_cache*.json

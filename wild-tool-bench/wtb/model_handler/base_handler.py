@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -171,7 +172,9 @@ class BaseHandler:
             messages = self._pre_messages_processing(env_info, current_task, history_tasks, history_answer_lists)
 
             inference_data = {"test_entry_id": test_entry_id, "task_idx": task_idx, "tools": tools, "messages": messages, "answer_list": answer_list}
+            task_start = time.monotonic()
             result_data = self.inference_and_eval_multi_step(inference_data)
+            result_data["task_wall_time_s"] = round(time.monotonic() - task_start, 3)
             all_task_result_data.append(result_data)
 
         return all_task_result_data
@@ -546,3 +549,27 @@ class BaseHandler:
             with open(file_path, "a") as fout:
                 for entry in result:
                     fout.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        # Write lightweight metrics summary (no inference_log) to a separate file
+        metrics_file_path = file_path.parent / file_path.name.replace("_result.jsonl", "_metrics_summary.jsonl")
+        metrics_entries = [
+            {"id": entry["id"], "model_name": entry.get("model_name", ""), "metrics": entry["metrics"]}
+            for entry in result
+            if "metrics" in entry
+        ]
+        if metrics_entries:
+            if update_mode:
+                existing_metrics = {}
+                if metrics_file_path.exists():
+                    existing_metrics = {e["id"]: e for e in load_file(metrics_file_path)}
+                for e in metrics_entries:
+                    existing_metrics[e["id"]] = e
+                sorted_metrics = sorted(existing_metrics.values(), key=sort_key)
+                with open(metrics_file_path, "w") as fout:
+                    for e in sorted_metrics:
+                        fout.write(json.dumps(e, ensure_ascii=False) + "\n")
+            else:
+                metrics_entries.sort(key=sort_key)
+                with open(metrics_file_path, "a") as fout:
+                    for e in metrics_entries:
+                        fout.write(json.dumps(e, ensure_ascii=False) + "\n")

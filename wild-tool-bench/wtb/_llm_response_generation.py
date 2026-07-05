@@ -23,6 +23,46 @@ RETRY_LIMIT = 3
 RETRY_DELAY = 65  # Delay in seconds
 
 
+def _compute_metrics(task_results: list) -> dict:
+    """Aggregate token usage and latency metrics across all tasks for one test entry."""
+    total_input = 0
+    total_output = 0
+    total_llm_latency = 0.0
+    total_wall_time = 0.0
+    per_task = []
+
+    for i, t in enumerate(task_results):
+        inp = sum(t.get("input_token_count", []))
+        out = sum(t.get("output_token_count", []))
+        llm_lat = round(sum(t.get("latency", [])), 3)
+        wall = t.get("task_wall_time_s", 0.0)
+
+        per_task.append({
+            "task_idx": i,
+            "input_tokens": inp,
+            "output_tokens": out,
+            "total_tokens": inp + out,
+            "llm_latency_s": llm_lat,
+            "task_wall_time_s": wall,
+            "steps": len(t.get("latency", [])),
+        })
+
+        total_input += inp
+        total_output += out
+        total_llm_latency += sum(t.get("latency", []))
+        total_wall_time += wall
+
+    return {
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "total_tokens": total_input + total_output,
+        "total_llm_latency_s": round(total_llm_latency, 3),
+        "total_wall_time_s": round(total_wall_time, 3),
+        "num_tasks": len(task_results),
+        "per_task": per_task,
+    }
+
+
 def get_involved_test_entries(run_ids):
     all_test_entries_involved = []
     if run_ids:
@@ -141,7 +181,8 @@ def multi_threaded_inference(handler, model_name, test_case):
     result_to_write = {
         "id": test_case["id"],
         "model_name": model_name,
-        "result": result
+        "result": result,
+        "metrics": _compute_metrics(result),
     }
 
     return result_to_write

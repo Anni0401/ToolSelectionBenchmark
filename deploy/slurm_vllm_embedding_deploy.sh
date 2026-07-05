@@ -43,6 +43,14 @@ TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 LOG_DIR="${PROJECT_ROOT}/logs"
 export CHECKPOINT_DIR="${HOME}/.cache/huggingface/hub"
 
+# Force vLLM v0 engine — the v1 engine (default in vLLM >= 0.6) crashes on
+# embedding models with EngineDeadError / AsyncLLM output_handler failures.
+export VLLM_USE_V1=0
+# Run Triton kernels in interpreter mode — prevents gcc/libcuda.so compilation
+# errors that occur on this cluster where the CUDA driver libs are only available
+# on compute nodes at job start, not during module pre-compilation.
+export TRITON_INTERPRET=1
+
 mkdir -p "${LOG_DIR}"
 mkdir -p "${CHECKPOINT_DIR}"
 
@@ -110,8 +118,9 @@ echo "[INFO] Endpoint info saved to: ${ENDPOINT_FILE}"
 cat "${ENDPOINT_FILE}"
 
 # ── Start vLLM embedding server ───────────────────────────────────────────────
-# --task embed  tells vLLM to expose /v1/embeddings instead of /v1/completions
 # Qwen3-Embedding-8B fits in ~20 GB VRAM at float16, so a single A40/A100 is fine.
+# Note: --task embed is NOT used here — older vLLM versions do not support it and
+# Qwen3-Embedding-8B is auto-detected as an embedding model from its architecture.
 echo ""
 echo "[INFO] Starting vLLM embedding server..."
 echo "[INFO] Logs → ${LOG_DIR}/vllm_embedding_server.log"
@@ -119,13 +128,13 @@ echo ""
 
 python -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_NAME}" \
-    --task embed \
     --port "${PORT}" \
     --host 0.0.0.0 \
     --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
     --dtype "${DTYPE}" \
     --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-    --max-model-len 32768 \
+    --max-model-len 8192 \
+    --enforce-eager \
     --download-dir "${CHECKPOINT_DIR}" \
     --trust-remote-code \
     2>&1 | tee -a "${LOG_DIR}/vllm_embedding_server.log"

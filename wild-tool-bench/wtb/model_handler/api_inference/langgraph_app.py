@@ -40,6 +40,61 @@ except Exception:
     OPENAI_AVAILABLE = False
 
 
+# ==================== Tool Selection Logging ====================
+
+def _get_tool_selection_log_path():
+    """Get the path to the tool selection log file."""
+    try:
+        from wtb.constant import RESULT_PATH
+        log_dir = RESULT_PATH
+    except Exception:
+        # Fallback to ../result/ if constant import fails
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        log_dir = os.path.join(script_dir, "..", "..", "result")
+    
+    os.makedirs(log_dir, exist_ok=True)
+    return os.path.join(log_dir, "tool_selection_logs.jsonl")
+
+
+def log_tool_selection(strategy_name: str, query: str, available_tools_count: int, 
+                      selected_tools: list, selection_metadata: dict = None):
+    """Log tool selection results for quality control.
+    
+    Args:
+        strategy_name: Name of the selection strategy (e.g., 'in_context', 'hierarchical')
+        query: The user query that was used for selection
+        available_tools_count: Total number of tools available for selection
+        selected_tools: List of selected tool objects
+        selection_metadata: Optional dict with additional metadata (model, latency, etc.)
+    """
+    try:
+        log_path = _get_tool_selection_log_path()
+        
+        # Extract tool names
+        selected_tool_names = [
+            tool.get("function", {}).get("name", "unknown")
+            for tool in selected_tools
+        ]
+        
+        # Create log entry
+        log_entry = {
+            "timestamp": time.time(),
+            "strategy": strategy_name,
+            "query": query[:500],  # Limit query length
+            "available_tools_count": available_tools_count,
+            "selected_tools_count": len(selected_tools),
+            "selected_tool_names": selected_tool_names,
+            "metadata": selection_metadata or {}
+        }
+        
+        # Append to JSONL file (thread-safe)
+        with open(log_path, "a") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+            
+    except Exception as e:
+        print(f"[WARNING] Failed to log tool selection: {e}")
+
+
 # ==================== Tool Selection Strategies ====================
 
 class ToolSelector(ABC):
@@ -97,6 +152,22 @@ class InContextToolSelector(ToolSelector):
         # Use schema cache tools instead of request tools
         all_tools = self.tools_cache if self.tools_cache else tools
         
+        # Extract query for logging
+        query = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                query = msg.get("content", "")[:500]
+                break
+        
+        # Log tool selection
+        log_tool_selection(
+            strategy_name="in_context",
+            query=query,
+            available_tools_count=len(all_tools),
+            selected_tools=all_tools,
+            selection_metadata={"method": "pass_through"}
+        )
+        
         print(f"\n[IN-CONTEXT SELECTOR]")
         print(f"  Total available tools: {len(all_tools)}")
         print(f"  Passing all {len(all_tools)} tools to LLM for in-context selection")
@@ -120,11 +191,10 @@ class HierarchicalToolSelector(ToolSelector):
     then passes only those to the main LLM.
     """
     
-    def __init__(self, max_tools: int = 10, schema_cache_file: str = None):
+    def __init__(self, schema_cache_file: str = None):
         self.endpoint = os.getenv("LANGGRAPH_SELECTOR_LLM_ENDPOINT")
         self.api_key = os.getenv("LANGGRAPH_SELECTOR_LLM_API_KEY")
         self.model = os.getenv("LANGGRAPH_SELECTOR_LLM_MODEL", "Qwen/Qwen3-30B-A3B")
-        self.max_tools = max_tools
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
             "tool_schemas_cache.json"
@@ -181,6 +251,19 @@ Return ONLY the JSON array, no other text."""
         
         # Filter tools by selected names
         selected = [t for t in all_tools if t.get("function", {}).get("name") in selected_names]
+        
+        # Log tool selection
+        log_tool_selection(
+            strategy_name="hierarchical",
+            query=query,
+            available_tools_count=len(all_tools),
+            selected_tools=selected,
+            selection_metadata={
+                "model": self.model,
+                "selected_tool_names": selected_names,
+                "max_tools_limit": self.max_tools if hasattr(self, 'max_tools') else None
+            }
+        )
         
         # Log the selection results
         print(f"\n[HIERARCHICAL SELECTOR]")
@@ -325,6 +408,24 @@ class EmbeddingBasedToolSelector(ToolSelector):
         
         selected = [tool_names[i] for i in top_indices]
         
+        # Extract similarity scores for logging
+        similarity_scores = {
+            tool_names[i].get("function", {}).get("name", "unknown"): float(similarities[i])
+            for i in top_indices
+        }
+        
+        # Log tool selection
+        log_tool_selection(
+            strategy_name="embedding",
+            query=query,
+            available_tools_count=len(tools),
+            selected_tools=selected,
+            selection_metadata={
+                "top_k": self.top_k,
+                "similarity_scores": similarity_scores
+            }
+        )
+        
         # Log the selection results
         print(f"\n[EMBEDDING SELECTOR]")
         print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
@@ -397,6 +498,7 @@ class OpenAIEmbeddingWithLLMRerankerToolSelector(ToolSelector):
         candidates = self.embedding_selector.select(messages, tools)
         
         if len(candidates) <= self.top_k:
+            # Log tool selection (bypass logging, embedding already logged)
             return candidates
         
         # Second pass: LLM reranking to filter and order
@@ -408,7 +510,23 @@ class OpenAIEmbeddingWithLLMRerankerToolSelector(ToolSelector):
             raise ValueError("No user query found in messages for embedding-reranker tool selection")
         
         reranked = self._rerank_with_llm(query, candidates)
-        return reranked[:self.top_k]
+        final_selected = reranked[:self.top_k]
+        
+        # Log tool selection
+        log_tool_selection(
+            strategy_name="embedding_reranker",
+            query=query,
+            available_tools_count=len(tools),
+            selected_tools=final_selected,
+            selection_metadata={
+                "embedding_candidates_count": len(candidates),
+                "reranked_count": len(reranked),
+                "top_k": self.top_k,
+                "initial_k": self.initial_k
+            }
+        )
+        
+        return final_selected
     
     def _extract_query(self, messages: list) -> str:
         """Extract the main query from messages."""
@@ -876,6 +994,24 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
             print(f"    ... and {len(selected) - 5} more")
         print()
         
+        # Log tool selection
+        log_tool_selection(
+            strategy_name="openai_embedding",
+            query=query,
+            available_tools_count=len(all_tools),
+            selected_tools=selected,
+            selection_metadata={
+                "top_k": self.top_k,
+                "cache_hits": cached_count,
+                "runtime_computed": missing_count,
+                "model": self.model,
+                "similarity_scores": {
+                    tool.get("function", {}).get("name", "unknown"): float(score)
+                    for tool, score in zip(selected, selected_scores)
+                }
+            }
+        )
+        
         return selected
     
     
@@ -1316,7 +1452,22 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
         if not query:
             raise ValueError("No user query found for Qwen3-Reranker tool selection")
         reranked = self._rerank_with_qwen3(query, tools)
-        return reranked[:self.top_k]
+        final_selected = reranked[:self.top_k]
+        
+        # Log tool selection
+        log_tool_selection(
+            strategy_name="qwen3_reranker",
+            query=query,
+            available_tools_count=len(tools),
+            selected_tools=final_selected,
+            selection_metadata={
+                "model": self.model,
+                "top_k": self.top_k,
+                "reranked_count": len(reranked)
+            }
+        )
+        
+        return final_selected
 
     def _extract_query(self, messages: list) -> str:
         """Extract the latest user query."""

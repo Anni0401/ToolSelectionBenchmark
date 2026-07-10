@@ -1746,8 +1746,11 @@ def _invoke_llm(messages: list, tools: list = None):
     print(f"[DEBUG] Messages: {len(messages)}, Tools: {len(tools or [])}")
 
     req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    # Large tool sets (1000+ tools) can take several minutes to process.
+    # Use env var EXECUTING_LLM_TIMEOUT (seconds) or default to 600 (10 min).
+    _timeout = int(os.getenv("EXECUTING_LLM_TIMEOUT", "600"))
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=_timeout) as resp:
             data = resp.read().decode("utf-8")
             print(f"[DEBUG] LLM response status: {resp.status}")
             try:
@@ -1759,13 +1762,13 @@ def _invoke_llm(messages: list, tools: list = None):
             # Extract content
             content = ""
             if isinstance(parsed, dict) and "content" in parsed:
-                content = parsed["content"]
+                content = parsed["content"] or ""
             elif isinstance(parsed, dict) and "choices" in parsed and parsed["choices"]:
                 first = parsed["choices"][0]
                 if isinstance(first, dict) and "message" in first:
                     msg = first["message"]
                     if isinstance(msg, dict) and "content" in msg:
-                        content = msg["content"]
+                        content = msg["content"] or ""
             
             # Extract tool calls if present
             tool_calls = []
@@ -1928,18 +1931,7 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
         try:
             if graph is not None:
                 # Execute graph with state
-                try:
-                    result = graph.invoke({
-                        "messages": messages,
-                        "tools": tools,
-                        "selected_tools": [],
-                        "response": "",
-                        "tool_calls": [],
-                        "selection_mode": selection_mode,
-                    })
-                except TypeError:
-                    # Fallback for different langgraph versions
-                    result = graph({
+                result = graph.invoke({
                         "messages": messages,
                         "tools": tools,
                         "selected_tools": [],

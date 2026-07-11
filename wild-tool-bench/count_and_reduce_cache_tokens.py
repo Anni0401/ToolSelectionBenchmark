@@ -17,8 +17,10 @@ Usage:
 
 Options:
     --seed SEED   Random seed for reproducibility (default: 42)
-    --save        Write the reduced cache back to tool_schemas_cache.json
-                  (a .bak backup is created first)
+    --save        Write two output files:
+                    • tool_schemas_cache_origin.json  – full original cache (unchanged copy)
+                    • tool_schemas_cache.json          – reduced cache with _synthetic /
+                                                         _source_tool fields stripped
 """
 
 import argparse
@@ -73,7 +75,10 @@ def main():
     parser.add_argument(
         "--save",
         action="store_true",
-        help="Persist the reduced cache in-place (creates .bak backup first)",
+        help=(
+            "Write tool_schemas_cache_origin.json (full original) and overwrite "
+            "tool_schemas_cache.json with the reduced, metadata-stripped version"
+        ),
     )
     args = parser.parse_args()
 
@@ -139,18 +144,25 @@ def main():
 
     # ── Optionally save ──────────────────────────────────────────────────────
     if args.save:
-        backup = CACHE_FILE + ".bak"
-        shutil.copy2(CACHE_FILE, backup)
-        print(f"Backup   → {backup}")
+        origin_file = CACHE_FILE.replace("tool_schemas_cache.json",
+                                         "tool_schemas_cache_origin.json")
 
-        data["tools"] = reduced_tools
-        data["count"] = len(reduced_tools)
+        # 1. Save the full original cache as _origin (unchanged, metadata intact)
+        shutil.copy2(CACHE_FILE, origin_file)
+        print(f"Origin   → {origin_file}")
+
+        # 2. Build the cleaned reduced cache: strip _synthetic / _source_tool from
+        #    every tool so they are never sent to the agent.
+        cleaned_tools = [strip_private_fields(t) for t in reduced_tools]
+        clean_data = dict(data)
+        clean_data["tools"] = cleaned_tools
+        clean_data["count"] = len(cleaned_tools)
 
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"Saved    → {CACHE_FILE}")
+            json.dump(clean_data, f, ensure_ascii=False, indent=2)
+        print(f"Reduced  → {CACHE_FILE}  ({len(cleaned_tools)} tools, metadata stripped)")
     else:
-        print(f"(Dry run – pass --save to overwrite {CACHE_FILE})")
+        print(f"(Dry run – pass --save to write the output files.)")
 
 
 if __name__ == "__main__":

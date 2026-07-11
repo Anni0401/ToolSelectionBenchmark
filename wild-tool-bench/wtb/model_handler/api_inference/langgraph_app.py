@@ -1722,8 +1722,14 @@ def _invoke_llm(messages: list, tools: list = None):
     # Build full chat completions endpoint from base URL
     endpoint = base_url.rstrip("/") + "/chat/completions"
 
+    # Prepend reasoning system prompt if not already present
+    reasoning = os.getenv("EXECUTING_LLM_REASONING", "medium")
+    messages_to_send = list(messages)
+    if not messages_to_send or messages_to_send[0].get("role") != "system":
+        messages_to_send.insert(0, {"role": "system", "content": f"Reasoning: {reasoning}"})
+
     payload = {
-        "messages": messages,
+        "messages": messages_to_send,
         "model": model,
         "temperature": 0.0,
         "top_p": 1.0,

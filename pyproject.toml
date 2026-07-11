@@ -2,7 +2,7 @@
 name = "tool-selection-benchmark"
 version = "0.1.0"
 description = "Tool Selection Benchmark for LLM Agents"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "requests",
     "pandas",
@@ -53,3 +53,8 @@ index-url = "https://pypi.org/simple"
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
 explicit = true
+
+[tool.uv.workspace]
+members = [
+    "gptoss-env",
+]

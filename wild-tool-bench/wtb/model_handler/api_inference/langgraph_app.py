@@ -1757,7 +1757,7 @@ def _invoke_llm(messages: list, tools: list = None):
                 parsed = json.loads(data)
             except Exception as e:
                 print(f"[DEBUG] Failed to parse JSON: {e}")
-                return data, []
+                return data, [], 0, 0
 
             # Extract content
             content = ""
@@ -1781,8 +1781,13 @@ def _invoke_llm(messages: list, tools: list = None):
                     if isinstance(msg, dict) and "tool_calls" in msg:
                         tool_calls = msg["tool_calls"]
             
-            print(f"[DEBUG] Extracted content length: {len(content)}, tool_calls: {len(tool_calls)}")
-            return content, tool_calls
+            # Extract token usage
+            usage = parsed.get("usage") or {}
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+
+            print(f"[DEBUG] Extracted content length: {len(content)}, tool_calls: {len(tool_calls)}, tokens: {input_tokens}/{output_tokens}")
+            return content, tool_calls, input_tokens, output_tokens
     except urllib.error.HTTPError as exc:
         error_data = exc.read().decode("utf-8")
         print(f"[ERROR] LLM HTTP Error {exc.code}: {exc.reason}")
@@ -1792,6 +1797,8 @@ def _invoke_llm(messages: list, tools: list = None):
         print(f"[ERROR] LLM URL Error: {exc.reason}")
         print(f"[ERROR] Make sure EXECUTING_LLM_BASE_URL is set and the vLLM server is running")
         raise RuntimeError(f"LLM request failed: {exc.reason}")
+
+    return "", [], 0, 0  # unreachable, satisfies type checkers
 
 
 def _create_tool_selector(mode: str) -> ToolSelector:
@@ -1842,6 +1849,8 @@ def _build_graph(mode: str = "in_context"):
         response: str
         tool_calls: list
         selection_mode: str
+        input_tokens: int
+        output_tokens: int
 
     builder = StateGraph(GraphState)
     selector = _create_tool_selector(mode)
@@ -1859,11 +1868,13 @@ def _build_graph(mode: str = "in_context"):
         selected_tools = state.get("selected_tools", [])
         
         # Invoke LLM with selected tools
-        response, tool_calls = _invoke_llm(messages, selected_tools)
+        response, tool_calls, input_tokens, output_tokens = _invoke_llm(messages, selected_tools)
         
         return {
             "response": response,
             "tool_calls": tool_calls,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
         }
 
     # Build graph with both nodes
@@ -1938,18 +1949,24 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
                         "response": "",
                         "tool_calls": [],
                         "selection_mode": selection_mode,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
                     })
                 
                 # Extract results from state
                 if isinstance(result, dict):
                     content = result.get("response") or ""
                     tool_calls = result.get("tool_calls") or []
+                    input_tokens = result.get("input_tokens", 0)
+                    output_tokens = result.get("output_tokens", 0)
                 else:
                     content = str(result)
                     tool_calls = []
+                    input_tokens = 0
+                    output_tokens = 0
             else:
                 # Fallback: invoke LLM directly if graph not available
-                content, tool_calls = _invoke_llm(messages, tools)
+                content, tool_calls, input_tokens, output_tokens = _invoke_llm(messages, tools)
         except Exception as exc:
             import traceback
             error_msg = str(exc)
@@ -1964,8 +1981,8 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
             "content": content,
             "reasoning_content": None,
             "tool_calls": tool_calls,
-            "input_token": 0,
-            "output_token": 0,
+            "input_token": input_tokens,
+            "output_token": output_tokens,
             "latency": latency,
             "selection_mode": selection_mode,
         }

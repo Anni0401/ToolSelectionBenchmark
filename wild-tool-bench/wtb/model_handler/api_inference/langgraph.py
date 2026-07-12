@@ -63,7 +63,7 @@ class LangGraphHandler(BaseHandler):
         request = urllib.request.Request(self.endpoint, data=body, headers=headers, method="POST")
         start_time = time.time()
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=600) as response:
                 response_text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"LangGraph request failed: {exc.code} {exc.reason}")

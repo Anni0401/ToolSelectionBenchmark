@@ -56,6 +56,74 @@ def _get_tool_selection_log_path():
     return os.path.join(log_dir, "tool_selection_logs.jsonl")
 
 
+def _get_tool_call_log_path():
+    """Get the path to the tool call execution log file."""
+    try:
+        from wtb.constant import RESULT_PATH
+        log_dir = RESULT_PATH
+    except Exception:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        log_dir = os.path.join(script_dir, "..", "..", "result")
+    os.makedirs(log_dir, exist_ok=True)
+    return os.path.join(log_dir, "tool_call_logs.jsonl")
+
+
+def log_tool_calls(messages_sent: list, tool_calls_returned: list, content: str,
+                   input_tokens: int, output_tokens: int, model: str = None):
+    """Log the actual tool calls the agent executes (LLM request/response).
+
+    Captures:
+      - The tool calls already present in the message history (prior turns)
+      - The new tool calls returned by the LLM in this turn
+      - Content, token counts and model name for diagnostics
+    """
+    try:
+        log_path = _get_tool_call_log_path()
+
+        # Collect tool calls from message history (prior turns)
+        history_tool_calls = []
+        for msg in messages_sent:
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    history_tool_calls.append({
+                        "id": tc.get("id"),
+                        "type": tc.get("type"),
+                        "name": func.get("name") if isinstance(func, dict) else None,
+                        "raw_keys": list(tc.keys()),
+                    })
+
+        # Summarise the new tool calls returned by the LLM
+        returned_summary = []
+        for tc in (tool_calls_returned or []):
+            func = tc.get("function", {}) if isinstance(tc, dict) else {}
+            returned_summary.append({
+                "id": tc.get("id") if isinstance(tc, dict) else None,
+                "type": tc.get("type") if isinstance(tc, dict) else None,
+                "name": func.get("name") if isinstance(func, dict) else None,
+                "arguments": func.get("arguments") if isinstance(func, dict) else None,
+                "raw_keys": list(tc.keys()) if isinstance(tc, dict) else [],
+            })
+
+        log_entry = {
+            "timestamp": time.time(),
+            "model": model,
+            "messages_sent_count": len(messages_sent),
+            "history_tool_calls_count": len(history_tool_calls),
+            "history_tool_calls": history_tool_calls,
+            "returned_tool_calls_count": len(returned_summary),
+            "returned_tool_calls": returned_summary,
+            "content_length": len(content) if content else 0,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
+
+        with open(log_path, "a") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[WARNING] Failed to log tool calls: {e}")
+
+
 def log_tool_selection(strategy_name: str, query: str, available_tools_count: int, 
                       selected_tools: list, selection_metadata: dict = None):
     """Log tool selection results for quality control.
@@ -1705,6 +1773,164 @@ class Qwen3EmbeddingContextWithQwen3RerankerToolSelector(Qwen3EmbeddingWithQwen3
 
 # ==================== LLM Invocation ====================
 
+# Special-token suffixes that indicate raw model output leaked into a tool call value.
+_RAW_MODEL_TOKENS = ("<|end|>", "<|start|>", "<|channel|>", "<|endoftext|>")
+
+
+def _normalize_messages_for_llm(messages: list) -> list:
+    """Normalize messages to standard OpenAI format before sending to vLLM.
+
+    Some models (e.g. gpt-oss-120b / phi-4 variants) generate tool calls using
+    an internal ``to=functions.<name>`` header format, sometimes with chain-of-
+    thought text and special tokens appended.  If those raw values end up stored
+    in the message history they will cause vLLM to return:
+
+        openai_harmony.HarmonyError: unexpected tokens remaining in message header:
+            Some("to=functions.<name>...")
+
+    on the *next* turn because vLLM cannot round-trip the non-standard format.
+
+    This function converts any such tool calls to the canonical OpenAI format:
+        {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
+
+    It is safe to call on well-formed messages – standard tool calls are passed
+    through unchanged.
+    """
+    normalized = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            normalized.append(msg)
+            continue
+
+        msg = dict(msg)  # shallow copy so we don't mutate the original
+
+        if msg.get("tool_calls"):
+            new_tool_calls = []
+            for idx, tc in enumerate(msg["tool_calls"]):
+                if not isinstance(tc, dict):
+                    new_tool_calls.append(tc)
+                    continue
+
+                tc = dict(tc)
+
+                if "function" in tc and isinstance(tc["function"], dict):
+                    # Standard format – just ensure arguments is a JSON string.
+                    func = dict(tc["function"])
+                    if isinstance(func.get("arguments"), dict):
+                        func["arguments"] = json.dumps(func["arguments"], ensure_ascii=False)
+                    tc["function"] = func
+                    new_tool_calls.append(tc)
+
+                elif "to" in tc:
+                    # ``to=functions.<name>`` style – convert to standard format.
+                    to_val = str(tc["to"])
+                    # Strip everything from the first special token or whitespace
+                    # followed by extra content (raw model output may be appended).
+                    for token in _RAW_MODEL_TOKENS:
+                        if token in to_val:
+                            to_val = to_val[:to_val.index(token)]
+                    to_val = to_val.strip()
+                    # Strip "functions." prefix that some models emit.
+                    name = to_val[len("functions."):] if to_val.startswith("functions.") else to_val
+                    # Strip any trailing punctuation / stray characters.
+                    name = name.split()[0].rstrip(".,;:")
+                    args = tc.get("parameters", tc.get("arguments", {}))
+                    if isinstance(args, dict):
+                        args = json.dumps(args, ensure_ascii=False)
+                    elif not isinstance(args, str):
+                        args = json.dumps(args, ensure_ascii=False)
+                    call_id = tc.get("id") or f"call_{name}_{idx}"
+                    print(f"[NORMALIZE] Converted to=functions format: '{tc.get('to', '')[:60]}' -> name='{name}'")
+                    new_tool_calls.append({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": args},
+                    })
+
+                elif "name" in tc:
+                    # Flat name-keyed format (no ``function`` wrapper).
+                    args = tc.get("arguments", {})
+                    if isinstance(args, dict):
+                        args = json.dumps(args, ensure_ascii=False)
+                    elif not isinstance(args, str):
+                        args = json.dumps(args, ensure_ascii=False)
+                    call_id = tc.get("id") or f"call_{tc['name']}_{idx}"
+                    new_tool_calls.append({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": args},
+                    })
+
+                else:
+                    # Unknown format – keep as-is and log a warning.
+                    print(f"[NORMALIZE] Unknown tool_call format (keys={list(tc.keys())}), keeping as-is: "
+                          f"{json.dumps(tc, ensure_ascii=False)[:120]}")
+                    new_tool_calls.append(tc)
+
+            msg["tool_calls"] = new_tool_calls
+
+        normalized.append(msg)
+    return normalized
+
+
+def _normalize_returned_tool_calls(tool_calls: list) -> list:
+    """Normalize tool calls returned BY the LLM to standard OpenAI format.
+
+    Mirrors _normalize_messages_for_llm but operates on a flat list of tool
+    call dicts rather than on messages.  Ensures tool calls stored in the
+    inference log and fed back as history are always in standard format.
+    """
+    if not tool_calls:
+        return tool_calls
+    result = []
+    for idx, tc in enumerate(tool_calls):
+        if not isinstance(tc, dict):
+            result.append(tc)
+            continue
+        tc = dict(tc)
+        if "function" in tc and isinstance(tc["function"], dict):
+            func = dict(tc["function"])
+            if isinstance(func.get("arguments"), dict):
+                func["arguments"] = json.dumps(func["arguments"], ensure_ascii=False)
+            tc["function"] = func
+            result.append(tc)
+        elif "to" in tc:
+            to_val = str(tc["to"])
+            for token in _RAW_MODEL_TOKENS:
+                if token in to_val:
+                    to_val = to_val[:to_val.index(token)]
+            to_val = to_val.strip()
+            name = to_val[len("functions."):] if to_val.startswith("functions.") else to_val
+            name = name.split()[0].rstrip(".,;:")
+            args = tc.get("parameters", tc.get("arguments", {}))
+            if isinstance(args, dict):
+                args = json.dumps(args, ensure_ascii=False)
+            elif not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False)
+            call_id = tc.get("id") or f"call_{name}_{idx}"
+            print(f"[NORMALIZE] Converted returned to=functions: '{tc.get('to', '')[:60]}' -> name='{name}'")
+            result.append({
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": args},
+            })
+        elif "name" in tc:
+            args = tc.get("arguments", {})
+            if isinstance(args, dict):
+                args = json.dumps(args, ensure_ascii=False)
+            elif not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False)
+            call_id = tc.get("id") or f"call_{tc['name']}_{idx}"
+            result.append({
+                "id": call_id,
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": args},
+            })
+        else:
+            result.append(tc)
+    return result
+
+
 def _invoke_llm(messages: list, tools: list = None):
     """Invoke a local OpenAI/vLLM-compatible endpoint.
     
@@ -1728,6 +1954,10 @@ def _invoke_llm(messages: list, tools: list = None):
     if not messages_to_send or messages_to_send[0].get("role") != "system":
         messages_to_send.insert(0, {"role": "system", "content": f"Reasoning: {reasoning}"})
 
+    # Normalize all messages: convert any to=functions.X tool calls to standard format
+    # before sending to vLLM, which would otherwise reject them with a 500.
+    messages_to_send = _normalize_messages_for_llm(messages_to_send)
+
     payload = {
         "messages": messages_to_send,
         "model": model,
@@ -1750,6 +1980,12 @@ def _invoke_llm(messages: list, tools: list = None):
     print(f"[DEBUG] Model: {model}")
     print(f"[DEBUG] Payload keys: {list(payload.keys())}")
     print(f"[DEBUG] Messages: {len(messages)}, Tools: {len(tools or [])}")
+    # Log any tool calls already present in the outgoing messages (history from prior turns)
+    for i, msg in enumerate(messages_to_send):
+        if msg.get("tool_calls"):
+            print(f"[DEBUG] Message[{i}] role={msg.get('role')} has tool_calls: "
+                  f"{[tc.get('function', {}).get('name') if isinstance(tc, dict) else tc for tc in msg['tool_calls']]}, "
+                  f"keys per call: {[list(tc.keys()) if isinstance(tc, dict) else type(tc) for tc in msg['tool_calls']]}")
 
     req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
     # Large tool sets (1000+ tools) can take several minutes to process.
@@ -1793,6 +2029,12 @@ def _invoke_llm(messages: list, tools: list = None):
             output_tokens = usage.get("completion_tokens", 0)
 
             print(f"[DEBUG] Extracted content length: {len(content)}, tool_calls: {len(tool_calls)}, tokens: {input_tokens}/{output_tokens}")
+            # Normalize returned tool calls to standard format so they are safe to store
+            # in message history and re-send in subsequent turns.
+            tool_calls = _normalize_returned_tool_calls(tool_calls)
+            if tool_calls:
+                print(f"[DEBUG] Tool calls returned: {[tc.get('function', {}).get('name') if isinstance(tc, dict) else tc for tc in tool_calls]}")
+            log_tool_calls(messages_to_send, tool_calls, content, input_tokens, output_tokens, model=model)
             return content, tool_calls, input_tokens, output_tokens
     except urllib.error.HTTPError as exc:
         error_data = exc.read().decode("utf-8")

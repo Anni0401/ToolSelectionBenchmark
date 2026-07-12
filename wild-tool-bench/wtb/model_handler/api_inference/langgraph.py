@@ -62,8 +62,12 @@ class LangGraphHandler(BaseHandler):
 
         request = urllib.request.Request(self.endpoint, data=body, headers=headers, method="POST")
         start_time = time.time()
+        # Use a client timeout that is longer than the server-side EXECUTING_LLM_TIMEOUT
+        # (default 600s) so the server always returns a proper error before the client
+        # gives up and raises a raw "timed out" socket error.
+        _client_timeout = int(os.getenv("LANGGRAPH_CLIENT_TIMEOUT", "1200"))
         try:
-            with urllib.request.urlopen(request, timeout=600) as response:
+            with urllib.request.urlopen(request, timeout=_client_timeout) as response:
                 response_text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"LangGraph request failed: {exc.code} {exc.reason}")

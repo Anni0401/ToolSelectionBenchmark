@@ -1,8 +1,14 @@
-# Interactive salloc Guide: Deploying `openai/gpt-oss-120b`
+# Interactive salloc Guide: Deploying `openai/gpt-oss`
 
-This guide walks through manually starting the `openai/gpt-oss-120b` vLLM server in an
-interactive SLURM session (`salloc`) on an **H200 node** of this cluster.
+This guide covers both gpt-oss model variants, using the same vLLM gpt-oss wheel:
 
+| Model | Params (active) | Min GPU | Use case |
+|---|---|---|---|
+| `openai/gpt-oss-20b` | 21B MoE (3.6B active) | 1× A40 (48 GB) | Quick pipeline test |
+| `openai/gpt-oss-120b` | 117B MoE (5.1B active) | 4× H200 | Benchmark runs |
+
+> **Recommendation:** test the full end-to-end setup with `gpt-oss-20b` first (single A40,
+> easier to allocate), then switch to `gpt-oss-120b` for production benchmark runs
 ### Available GPU node types on this cluster
 
 | `--gres` type | GPUs per node | GPU model | VRAM per GPU | Available memory |
@@ -19,7 +25,24 @@ All GPU nodes share the `gpu-single` partition; the GPU type and count are selec
 
 ## 1. Request an interactive session
 
-From the **login node**, run:
+From the **login node**, run one of the following depending on the model:
+
+**For testing (`gpt-oss-20b`) — single A40:**
+```bash
+salloc \
+  --partition=gpu-single \
+  --nodes=1 \
+  --ntasks=1 \
+  --cpus-per-task=4 \
+  --gres=gpu:A40:1 \
+  --mem=64G \
+  --time=4:00:00
+```
+
+> **Note:** `gpt-oss-20b` is a 21B MoE model. In BF16 the weights occupy ~42 GB, fitting
+> comfortably on a single A40 (48 GB) with room for KV cache.
+
+**For benchmark runs (`gpt-oss-120b`) — 4× H200:**
 
 ```bash
 salloc \
@@ -47,23 +70,23 @@ compute node. Note the **hostname** (e.g. `dws-15`) — you will need it later.
 ```bash
 cd /home/ma/ma_ma/ma_aherrman/ToolSelectionBenchmark
 
+# $WORK has 1 TiB quota (NVMe) — store the venv and pip artifacts there
+# to avoid filling the 100 GiB $HOME quota.
+VENV_DIR="${WORK}/venvs/venv-gptoss"
+export TMPDIR="${WORK}/tmp_pip"
+export PIP_CACHE_DIR="${WORK}/tmp_pip/cache"
+mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}"
+
 # First time only: create the dedicated gpt-oss venv
-if [ ! -d ".venv-gptoss" ]; then
+if [ ! -d "${VENV_DIR}" ]; then
     export PATH="${HOME}/.local/bin:${PATH}"
     # install uv if missing
     command -v uv &>/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-    uv venv .venv-gptoss --python 3.12 --seed   # --seed bootstraps pip into the venv
-    source .venv-gptoss/bin/activate
+    uv venv "${VENV_DIR}" --python 3.12 --seed   # --seed bootstraps pip into the venv
+    source "${VENV_DIR}/bin/activate"
     # Step 1: install torch nightly (cu128) — latest available build.
     # The gptoss wheel pins an old nightly that is no longer in the index,
     # so we install torch first and then bypass the pin with --no-deps.
-    #
-    # IMPORTANT: torch+vllm wheels are ~4-5 GB when extracted. /tmp on login/cpu
-    # nodes is too small. Redirect pip's temp and cache dirs to gpfs first:
-    export TMPDIR="${HOME}/tmp_pip"
-    export PIP_CACHE_DIR="${HOME}/tmp_pip/cache"
-    mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}"
-    #
     python -m pip install --pre torch \
       --index-url https://download.pytorch.org/whl/nightly/cu128
     # Step 2: install vllm gpt-oss wheel without dependency resolution
@@ -77,9 +100,16 @@ if [ ! -d ".venv-gptoss" ]; then
       "pillow" "prometheus-client" "pydantic>=2" "ray>=2.9" \
       "regex" "requests" "sentencepiece" "tiktoken" \
       "transformers>=4.45" "triton" "xformers" 2>/dev/null || true
+    python -m pip install cloudpickle
+    python -m pip install msgspec
+    python -m pip install cachetools
+    python -m pip install cbor2
+    python -m pip install psutil
+    python -m pip install setproctitle 
+    python -m pip install pybase64
 fi
 
-source .venv-gptoss/bin/activate
+source "${VENV_DIR}/bin/activate"
 ```
 
 Verify the correct vLLM build is active:
@@ -90,13 +120,38 @@ python -c "import vllm; print(vllm.__version__)"
 # (the internal version string is a dev build with git hash — this is correct for the gptoss wheel)
 ```
 
+> **Subsequent sessions:** re-export `VENV_DIR` and source it before use:
+> ```bash
+> export VENV_DIR="${WORK}/venvs/venv-gptoss"
+> source "${VENV_DIR}/bin/activate"
+> ```
+
 ---
 
-## 3. Start the vLLM server (H200 / Hopper)
+## 3. Start the vLLM server
 
-For H200 (Hopper architecture) with 4-way tensor parallelism:
+**For testing (`gpt-oss-20b`) — single A40, no tensor parallelism:**
+```bash
+# Model weights are cached locally — no re-download needed.
+GPT_OSS_20B="${WORK}/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee"
+
+vllm serve "${GPT_OSS_20B}" \
+  --served-model-name openai/gpt-oss-20b \
+  --tensor-parallel-size 1 \
+  --dtype bfloat16 \
+  --gpu-memory-utilization 0.90 \
+  --enforce-eager \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --tool-call-parser openai \
+  --enable-auto-tool-choice
+```
+
+**For benchmark runs (`gpt-oss-120b`) — H200 with 4-way tensor parallelism:**
 
 ```bash
+# If gpt-oss-120b weights are cached locally, use the snapshot path analogously:
+# GPT_OSS_120B="${WORK}/huggingface/hub/models--openai--gpt-oss-120b/snapshots/<hash>"
 vllm serve openai/gpt-oss-120b \
   --tensor-parallel-size 4 \
   --dtype bfloat16 \
@@ -107,10 +162,8 @@ vllm serve openai/gpt-oss-120b \
   --tool-call-parser openai \
   --enable-auto-tool-choice
 ```
-
-> **H200 note:** No `VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8` or `--kv-cache-dtype fp8`
-> flags needed — those are Blackwell (B200) specific. BF16 runs natively on Hopper (H200).
-> The H200's 141 GB HBM3e gives significant KV-cache headroom over H100 80 GB.
+> **Note:** No `VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8` or `--kv-cache-dtype fp8`
+> flags needed for either model on A40/H200 — those are Blackwell (B200) specific.
 > `--enforce-eager` disables torch.compile/CUDA-graph capture, avoiding `nvcc` permission
 > errors on this cluster. Remove it only if you need maximum throughput and `nvcc` works.
 
@@ -144,8 +197,14 @@ running the benchmark:
 ```bash
 # Replace <node> with the hostname from step 1 (e.g. dws-15)
 export EXECUTING_LLM_BASE_URL=http://<node>:8000/v1
-export EXECUTING_LLM_MODEL=openai/gpt-oss-120b
 export EXECUTING_LLM_API_KEY=EMPTY
+
+
+# For testing (gpt-oss-20b):
+export EXECUTING_LLM_MODEL=openai/gpt-oss-20b
+
+# For benchmark runs (gpt-oss-120b):
+# export EXECUTING_LLM_MODEL=openai/gpt-oss-120b
 ```
 
 Quick connectivity check:
@@ -154,7 +213,7 @@ Quick connectivity check:
 curl http://<node>:8000/v1/models
 ```
 
-Expected response includes `"id": "openai/gpt-oss-120b"`.
+Expected response includes `"id": "openai/gpt-oss-20b"` (or `gpt-oss-120b` for the larger model).
 
 ---
 
@@ -174,8 +233,9 @@ python -u -m wtb.openfunctions_evaluation --model=langgraph
 | Symptom | Fix |
 |---------|-----|
 | `CUDA out of memory` | Lower `--gpu-memory-utilization` to `0.85` |
-| `Killed` during pip install | `/tmp` is full (only 4 GB); set `export TMPDIR=~/tmp_pip PIP_CACHE_DIR=~/tmp_pip/cache` before pip |
+| `Disk quota exceeded` during pip install | `$HOME` (100 GiB) is full. Use `$WORK` (1 TiB): set `export TMPDIR="${WORK}/tmp_pip" PIP_CACHE_DIR="${WORK}/tmp_pip/cache"` and store the venv under `$WORK/venvs/` as shown in step 2 |
+| `Killed` during pip install | `/tmp` on login nodes is small; always run installs from a compute node via `salloc` |
 | `Connection refused` on login node | Check node hostname; ensure port 8000 is not firewalled |
 | `tl.language not defined` | Do not install extra `pytorch-triton` alongside vLLM |
 | Harmony vocab download failure | Pre-download tiktoken files and set `TIKTOKEN_ENCODINGS_BASE` |
-| Model download slow/fails | Set `HF_HUB_CACHE` to a fast shared filesystem path |
+| Model download slow/fails | Weights are already cached at `${WORK}/huggingface/hub/`. Pass the local snapshot path directly to `vllm serve` (see step 3) or set `export HF_HUB_CACHE="${WORK}/huggingface/hub"` |

@@ -63,32 +63,31 @@ export NCCL_NET_PLUGIN=none
 export NCCL_IB_DISABLE=1
 export NCCL_P2P_LEVEL=NVL
 
-python -m vllm.entrypoints.openai.api_server \
-  --model Qwen/Qwen3-30B-A3B \
-  --tensor-parallel-size 2 \
-  --dtype float16 \
+export HF_HOME=/work/aherrman/huggingface
+export TRANSFORMERS_CACHE=/work/aherrman/huggingface
+export HF_HUB_CACHE=/work/aherrman/huggingface/hub
+
+export LD_LIBRARY_PATH=$HOME/ToolSelectionBenchmark/.venv/lib/python3.12/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
+
+vllm serve unsloth/Qwen3-30B-A3B-bnb-4bit \
+  --port 8002 \
+  --tensor-parallel-size 1 \
+  --dtype bfloat16\
+  --quantization bitsandbytes \
   --gpu-memory-utilization 0.90 \
-  --max-model-len 32768 \
-  --max-num-batched-tokens 4096 \
-  --enable-prefix-caching \
-  --enable-auto-tool-choice \
-  --tool-call-parser hermes \
-  --host 0.0.0.0 \
-  --port 8001 \
-  --download-dir "${HOME}/.cache/huggingface/hub"
+  --max-model-len 32768
 ```
 
-> **Port 8001** keeps this server separate from the gpt-oss-120b server on port 8000.
-> Adjust `--tool-call-parser` if your vLLM version requires a different parser for Qwen3.
+
 
 Alternatively, you can use the provided deploy script which sets the same flags via
 environment variables:
 
 ```bash
-export MODEL_NAME=Qwen/Qwen3-30B-A3B
-export VLLM_PORT=8001
-export TENSOR_PARALLEL_SIZE=2
-export DTYPE=float16
+export MODEL_NAME=unsloth/Qwen3-30B-A3B-bnb-4bit
+export VLLM_PORT=8002
+export TENSOR_PARALLEL_SIZE=1
+export DTYPE=half
 export GPU_MEMORY_UTILIZATION=0.90
 bash deploy/slurm_vllm_deploy.sh
 ```
@@ -96,7 +95,7 @@ bash deploy/slurm_vllm_deploy.sh
 The server is ready when you see:
 ```
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8001
+INFO:     Uvicorn running on http://0.0.0.0:8002
 ```
 
 ---
@@ -115,6 +114,7 @@ export EXECUTING_LLM_API_KEY=EMPTY
 export SELECTOR_LLM_BASE_URL=http://<node-qwen>:8001/v1
 export SELECTOR_LLM_MODEL=Qwen/Qwen3-30B-A3B
 export SELECTOR_LLM_API_KEY=EMPTY
+
 ```
 
 > Both `<node-gptoss>` and `<node-qwen>` can be the **same node** if you obtained a

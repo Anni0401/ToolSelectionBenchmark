@@ -29,13 +29,15 @@ class LangGraphHandler(BaseHandler):
     def _request_tool_call(self, inference_data):
         messages = inference_data["messages"]
         tools = inference_data["tools"]
+        test_entry_id = inference_data.get("test_entry_id")
+        task_idx = inference_data.get("task_idx")
 
-        payload = self._build_langgraph_payload(messages, tools)
+        payload = self._build_langgraph_payload(messages, tools, test_entry_id=test_entry_id, task_idx=task_idx)
         api_response, latency = self._send_langgraph_request(payload)
 
         return api_response, latency
 
-    def _build_langgraph_payload(self, messages, tools):
+    def _build_langgraph_payload(self, messages, tools, test_entry_id=None, task_idx=None):
         """Build the LangGraph execution payload.
 
         Supports configurable tool selection strategy:
@@ -44,13 +46,18 @@ class LangGraphHandler(BaseHandler):
         - embedding: embedding-based retrieval
         - embedding_reranker: embeddings + LLM reranking
         """
-        return {
+        payload = {
             "input": {
                 "messages": messages,
                 "tools": tools,
             },
             "selection_mode": self.selection_mode,
         }
+        if test_entry_id is not None:
+            payload["test_entry_id"] = test_entry_id
+        if task_idx is not None:
+            payload["task_idx"] = task_idx
+        return payload
 
     def _send_langgraph_request(self, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

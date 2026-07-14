@@ -1,11 +1,15 @@
 import os
 import json
 import time
+import threading
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from abc import ABC, abstractmethod
 from typing import TypedDict, Any, Optional
+
+# Per-request context (thread-safe).  Set in do_POST, read by log helpers.
+_request_context = threading.local()
 
 # Load environment variables from .env file
 try:
@@ -42,30 +46,29 @@ except Exception:
 
 # ==================== Tool Selection Logging ====================
 
-def _get_tool_selection_log_path():
-    """Get the path to the tool selection log file."""
+def _get_log_dir():
+    """Return the per-strategy log directory (mirrors result/<strategy>/ layout)."""
     try:
         from wtb.constant import RESULT_PATH
-        log_dir = RESULT_PATH
+        base = RESULT_PATH
     except Exception:
-        # Fallback to ../result/ if constant import fails
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        log_dir = os.path.join(script_dir, "..", "..", "result")
-    
+        base = os.path.join(script_dir, "..", "..", "result")
+
+    strategy = getattr(_request_context, "selection_mode", None) or "unknown"
+    log_dir = os.path.join(base, strategy)
     os.makedirs(log_dir, exist_ok=True)
-    return os.path.join(log_dir, "tool_selection_logs.jsonl")
+    return log_dir
+
+
+def _get_tool_selection_log_path():
+    """Get the path to the tool selection log file (per-strategy subfolder)."""
+    return os.path.join(_get_log_dir(), "tool_selection_logs.jsonl")
 
 
 def _get_tool_call_log_path():
-    """Get the path to the tool call execution log file."""
-    try:
-        from wtb.constant import RESULT_PATH
-        log_dir = RESULT_PATH
-    except Exception:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        log_dir = os.path.join(script_dir, "..", "..", "result")
-    os.makedirs(log_dir, exist_ok=True)
-    return os.path.join(log_dir, "tool_call_logs.jsonl")
+    """Get the path to the tool call execution log file (per-strategy subfolder)."""
+    return os.path.join(_get_log_dir(), "tool_call_logs.jsonl")
 
 
 def log_tool_calls(messages_sent: list, tool_calls_returned: list, content: str,
@@ -107,6 +110,9 @@ def log_tool_calls(messages_sent: list, tool_calls_returned: list, content: str,
 
         log_entry = {
             "timestamp": time.time(),
+            "test_entry_id": getattr(_request_context, "test_entry_id", None),
+            "task_idx": getattr(_request_context, "task_idx", None),
+            "selection_mode": getattr(_request_context, "selection_mode", None),
             "model": model,
             "messages_sent_count": len(messages_sent),
             "history_tool_calls_count": len(history_tool_calls),
@@ -147,6 +153,8 @@ def log_tool_selection(strategy_name: str, query: str, available_tools_count: in
         # Create log entry
         log_entry = {
             "timestamp": time.time(),
+            "test_entry_id": getattr(_request_context, "test_entry_id", None),
+            "task_idx": getattr(_request_context, "task_idx", None),
             "strategy": strategy_name,
             "query": query[:500],  # Limit query length
             "available_tools_count": available_tools_count,
@@ -304,7 +312,7 @@ class HierarchicalToolSelector(ToolSelector):
         query = self._extract_query(messages)
         tool_descriptions = self._format_tools(all_tools)
         
-        selection_prompt = f"""Given the user query, select the most relevant tools from the available list.
+        selection_prompt = f"""Given the user query, select the most relevant tools from the available list. /no_think
         
 User Query: {query}
 
@@ -315,7 +323,16 @@ Return a JSON array of tool names you would use, e.g. ["getTool1", "getTool2"].
 Return ONLY the JSON array, no other text."""
         
         response = self._invoke_selector_llm(selection_prompt)
-        selected_names = json.loads(response)
+        # Strip <think>...</think> blocks produced by reasoning models (e.g. Qwen3)
+        import re as _re
+        clean = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL).strip()
+        # Extract the first JSON array found in the remaining text
+        m = _re.search(r"\[.*?\]", clean, _re.DOTALL)
+        if not m:
+            print(f"[WARNING] Selector LLM returned no JSON array; got: {clean[:200]}")
+            selected_names = []
+        else:
+            selected_names = json.loads(m.group())
         
         # Filter tools by selected names
         selected = [t for t in all_tools if t.get("function", {}).get("name") in selected_names]
@@ -328,8 +345,7 @@ Return ONLY the JSON array, no other text."""
             selected_tools=selected,
             selection_metadata={
                 "model": self.model,
-                "selected_tool_names": selected_names,
-                "max_tools_limit": self.max_tools if hasattr(self, 'max_tools') else None
+                "selected_tool_names": selected_names
             }
         )
         
@@ -346,7 +362,7 @@ Return ONLY the JSON array, no other text."""
             print(f"    ... and {len(selected) - 5} more")
         print()
         
-        return selected[:self.max_tools]
+        return selected
     
     def _extract_query(self, messages: list) -> str:
         """Extract the main query from messages."""
@@ -379,6 +395,8 @@ Return ONLY the JSON array, no other text."""
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
             "top_p": 1.0,
+            "max_tokens": 2000,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -390,8 +408,9 @@ Return ONLY the JSON array, no other text."""
             headers["Authorization"] = f"Bearer {self.api_key}"
         
         req = urllib.request.Request(self.endpoint, data=body, headers=headers, method="POST")
+        print(f"[SELECTOR LLM] Payload size: {len(body) / 1024:.1f} KB, sending to {self.endpoint}")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=240) as resp:
                 data = resp.read().decode("utf-8")
                 parsed = json.loads(data)
                 
@@ -400,11 +419,15 @@ Return ONLY the JSON array, no other text."""
                 # Extract content from OpenAI-compatible response
                 if isinstance(parsed, dict) and "choices" in parsed and parsed["choices"]:
                     first = parsed["choices"][0]
+                    finish_reason = first.get("finish_reason")
+                    usage = parsed.get("usage", {})
+                    print(f"[DEBUG] finish_reason={finish_reason}, prompt_tokens={usage.get('prompt_tokens')}, completion_tokens={usage.get('completion_tokens')}")
                     if isinstance(first, dict) and "message" in first:
                         msg = first["message"]
                         if isinstance(msg, dict) and "content" in msg:
                             content = msg["content"]
-                            print(f"[DEBUG] Extracted content from response: {content[:100]}")
+                            has_think = "<think>" in content
+                            print(f"[DEBUG] has_think={has_think}, content[:200]={content[:200]}")
                             return content
                 
                 # Fallback: return raw data
@@ -2102,7 +2125,7 @@ def _create_tool_selector(mode: str) -> ToolSelector:
     mode = mode.lower() if mode else "in_context"
     
     if mode == "hierarchical":
-        return HierarchicalToolSelector(max_tools=10)
+        return HierarchicalToolSelector()
     elif mode == "embedding":
         return OpenAIEmbeddingBasedToolSelector(top_k=5)
     elif mode == "embedding_context":
@@ -2218,6 +2241,12 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
         
         # Support selection_mode in payload (can override default)
         selection_mode = payload.get("selection_mode") or inp.get("selection_mode") or _default_mode
+
+        # Set per-request context so log helpers can identify which task/strategy
+        # produced each log entry without threading params through every layer.
+        _request_context.test_entry_id = payload.get("test_entry_id") or inp.get("test_entry_id")
+        _request_context.task_idx = payload.get("task_idx") if payload.get("task_idx") is not None else inp.get("task_idx")
+        _request_context.selection_mode = selection_mode
         
         print(f"\n[SERVER] Request received:")
         print(f"  Default mode: {_default_mode}")

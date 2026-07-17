@@ -330,7 +330,7 @@ Available Tools:
 Return a JSON array of at most 10 tool names that are most relevant, e.g. ["getTool1", "getTool2"].
 Return ONLY the JSON array, no other text."""
         
-        response = self._invoke_selector_llm(selection_prompt)
+        response, selector_usage, selector_latency = self._invoke_selector_llm(selection_prompt)
         # Strip <think>...</think> blocks produced by reasoning models (e.g. Qwen3)
         import re as _re
         clean = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL).strip()
@@ -353,7 +353,10 @@ Return ONLY the JSON array, no other text."""
             selected_tools=selected,
             selection_metadata={
                 "model": self.model,
-                "selected_tool_names": selected_names
+                "selected_tool_names": selected_names,
+                "selector_input_tokens": selector_usage.get("prompt_tokens"),
+                "selector_output_tokens": selector_usage.get("completion_tokens"),
+                "selector_latency_s": selector_latency,
             }
         )
         
@@ -391,7 +394,7 @@ Return ONLY the JSON array, no other text."""
             lines.append(f"- {name}: {desc}")
         return "\n".join(lines)
     
-    def _invoke_selector_llm(self, prompt: str) -> str:
+    def _invoke_selector_llm(self, prompt: str) -> tuple[str, dict, float]:
         """Call the selector LLM endpoint using OpenAI-compatible format."""
         print(f"\n[SELECTOR LLM] Calling: {self.endpoint}")
         print(f"[SELECTOR LLM] Model: {self.model}")
@@ -417,6 +420,7 @@ Return ONLY the JSON array, no other text."""
         
         req = urllib.request.Request(self.endpoint, data=body, headers=headers, method="POST")
         print(f"[SELECTOR LLM] Payload size: {len(body) / 1024:.1f} KB, sending to {self.endpoint}")
+        started = time.perf_counter()
         try:
             with urllib.request.urlopen(req, timeout=240) as resp:
                 data = resp.read().decode("utf-8")
@@ -436,11 +440,11 @@ Return ONLY the JSON array, no other text."""
                             content = msg["content"]
                             has_think = "<think>" in content
                             print(f"[DEBUG] has_think={has_think}, content[:200]={content[:200]}")
-                            return content
+                            return content, usage, time.perf_counter() - started
                 
                 # Fallback: return raw data
                 print(f"[DEBUG] Unexpected response format, returning raw: {str(parsed)[:200]}")
-                return str(parsed)
+                return str(parsed), parsed.get("usage", {}) if isinstance(parsed, dict) else {}, time.perf_counter() - started
                 
         except urllib.error.HTTPError as exc:
             error_data = exc.read().decode("utf-8")

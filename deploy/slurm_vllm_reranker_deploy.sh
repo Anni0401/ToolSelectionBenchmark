@@ -37,7 +37,7 @@ fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-Reranker-8B}"
-PORT="${VLLM_RERANKER_PORT:-8002}"
+PORT="${VLLM_RERANKER_PORT:-8003}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.80}"
 DTYPE="${DTYPE:-float16}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"

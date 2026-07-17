@@ -36,7 +36,7 @@ fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-Embedding-8B}"
-PORT="${VLLM_EMBEDDING_PORT:-8001}"
+PORT="${VLLM_EMBEDDING_PORT:-8002}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.4}"
 DTYPE="${DTYPE:-float16}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"

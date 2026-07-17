@@ -319,7 +319,7 @@ User Query: {query}
 Available Tools:
 {tool_descriptions}
 
-Return a JSON array of tool names you would use, e.g. ["getTool1", "getTool2"].
+Return a JSON array of at most 10 tool names that are most relevant, e.g. ["getTool1", "getTool2"].
 Return ONLY the JSON array, no other text."""
         
         response = self._invoke_selector_llm(selection_prompt)
@@ -395,7 +395,7 @@ Return ONLY the JSON array, no other text."""
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
             "top_p": 1.0,
-            "max_tokens": 2000,
+            "max_tokens": 400,
             "chat_template_kwargs": {"enable_thinking": False},
         }
         

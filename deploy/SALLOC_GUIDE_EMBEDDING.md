@@ -62,19 +62,11 @@ export NCCL_P2P_LEVEL=NVL
 bash deploy/slurm_vllm_embedding_deploy.sh &
 EMBED_SERVER_PID=$!
 
-# Wait for the server to be ready
-echo "Waiting for embedding server..."
-until curl -sf http://localhost:8002/v1/models > /dev/null; do sleep 3; done
-echo "Embedding server is up."
-```
-
-> The deploy script defaults to port 8001. Override it to 8002 to match the port table:
-> `VLLM_EMBEDDING_PORT=8002 bash deploy/slurm_vllm_embedding_deploy.sh &`
 
 ### A4. Run the offline embedding script
 
 ```bash
-export QWEN3_EMBEDDING_BASE_URL=http://localhost:8001/v1
+export QWEN3_EMBEDDING_BASE_URL=http://localhost:8002/v1
 export QWEN3_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
 export QWEN3_EMBEDDING_API_KEY=EMPTY
 
@@ -85,7 +77,7 @@ cd wild-tool-bench
 
 python wtb/model_handler/api_inference/setup_openai_embeddings.py \
   --provider qwen3 \
-  --tools-file ../multi-agent-framework/tools/tools_en.jsonl
+  --tools-file ../multi-agent-framework/tools/tools_en_final.jsonl
 ```
 
 The embeddings are saved to `tool_embeddings_cache.json` in the same directory.

@@ -4,12 +4,14 @@ import time
 import threading
 import urllib.request
 import urllib.error
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from abc import ABC, abstractmethod
 from typing import TypedDict, Any, Optional
 
 # Per-request context (thread-safe).  Set in do_POST, read by log helpers.
 _request_context = threading.local()
+_log_lock = threading.Lock()
 
 # Load environment variables from .env file
 try:
@@ -71,6 +73,13 @@ def _get_tool_call_log_path():
     return os.path.join(_get_log_dir(), "tool_call_logs.jsonl")
 
 
+def _append_task_log(path: str, entry: dict):
+    """Append one request/turn without losing other turns of the same task."""
+    with _log_lock:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 def log_tool_calls(messages_sent: list, tool_calls_returned: list, content: str,
                    input_tokens: int, output_tokens: int, model: str = None):
     """Log the actual tool calls the agent executes (LLM request/response).
@@ -112,6 +121,7 @@ def log_tool_calls(messages_sent: list, tool_calls_returned: list, content: str,
             "timestamp": time.time(),
             "test_entry_id": getattr(_request_context, "test_entry_id", None),
             "task_idx": getattr(_request_context, "task_idx", None),
+            "request_id": getattr(_request_context, "request_id", None),
             "selection_mode": getattr(_request_context, "selection_mode", None),
             "model": model,
             "messages_sent_count": len(messages_sent),
@@ -124,8 +134,7 @@ def log_tool_calls(messages_sent: list, tool_calls_returned: list, content: str,
             "output_tokens": output_tokens,
         }
 
-        with open(log_path, "a") as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        _append_task_log(log_path, log_entry)
     except Exception as e:
         print(f"[WARNING] Failed to log tool calls: {e}")
 
@@ -155,6 +164,7 @@ def log_tool_selection(strategy_name: str, query: str, available_tools_count: in
             "timestamp": time.time(),
             "test_entry_id": getattr(_request_context, "test_entry_id", None),
             "task_idx": getattr(_request_context, "task_idx", None),
+            "request_id": getattr(_request_context, "request_id", None),
             "strategy": strategy_name,
             "query": query[:500],  # Limit query length
             "available_tools_count": available_tools_count,
@@ -163,9 +173,7 @@ def log_tool_selection(strategy_name: str, query: str, available_tools_count: in
             "metadata": selection_metadata or {}
         }
         
-        # Append to JSONL file (thread-safe)
-        with open(log_path, "a") as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        _append_task_log(log_path, log_entry)
             
     except Exception as e:
         print(f"[WARNING] Failed to log tool selection: {e}")
@@ -2247,6 +2255,7 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
         _request_context.test_entry_id = payload.get("test_entry_id") or inp.get("test_entry_id")
         _request_context.task_idx = payload.get("task_idx") if payload.get("task_idx") is not None else inp.get("task_idx")
         _request_context.selection_mode = selection_mode
+        _request_context.request_id = uuid.uuid4().hex
         
         print(f"\n[SERVER] Request received:")
         print(f"  Default mode: {_default_mode}")

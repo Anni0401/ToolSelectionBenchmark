@@ -527,45 +527,49 @@ class BaseHandler:
 
         file_path = model_result_dir / os.path.basename(PROMPT_PATH).replace(".jsonl", "_result.jsonl")
 
-        # Always upsert by (test-entry id, task index). A rerun may contain
-        # only a subset of the tasks in an entry, so merge those tasks into
-        # the existing entry instead of replacing the other tasks or appending
-        # a duplicate entry.
-        existing_entries = {}
-        if file_path.exists():
-            existing_entries = {entry["id"]: entry for entry in load_file(file_path)}
+        if update_mode:
+            # Load existing entries from the file
+            existing_entries = {}
+            if file_path.exists():
+                existing_entries = {entry["id"]: entry for entry in load_file(file_path)}
 
-        for entry in result:
-            entry_id = entry["id"]
-            previous = existing_entries.get(entry_id, {})
-            merged = {**previous, **entry}
-            previous_tasks = {
-                item.get("inference_log", {}).get("task_idx", index): item
-                for index, item in enumerate(previous.get("result", []))
-            }
-            for index, item in enumerate(entry.get("result", [])):
-                task_idx = item.get("inference_log", {}).get("task_idx", index)
-                previous_tasks[task_idx] = item
-            merged["result"] = [previous_tasks[key] for key in sorted(previous_tasks)]
-            existing_entries[entry_id] = merged
+            # Update existing entries with new data
+            for entry in result:
+                existing_entries[entry["id"]] = entry
 
-        sorted_entries = sorted(existing_entries.values(), key=sort_key)
-        with open(file_path, "w") as fout:
-            for index, entry in enumerate(sorted_entries):
-                if index:
-                    fout.write("\n")
-                fout.write(json.dumps(entry, ensure_ascii=False))
+            # Sort entries by `id` and write them back to ensure order consistency
+            sorted_entries = sorted(existing_entries.values(), key=sort_key)
+            with open(file_path, "w") as fout:
+                for entry in sorted_entries:
+                    fout.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        else:
+            # Normal mode: Append in sorted order
+            result.sort(key=sort_key)
+            with open(file_path, "a") as fout:
+                for entry in result:
+                    fout.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
         # Write lightweight metrics summary (no inference_log) to a separate file
         metrics_file_path = file_path.parent / file_path.name.replace("_result.jsonl", "_metrics_summary.jsonl")
         metrics_entries = [
             {"id": entry["id"], "model_name": entry.get("model_name", ""), "metrics": entry["metrics"]}
-            for entry in sorted_entries
+            for entry in result
             if "metrics" in entry
         ]
         if metrics_entries:
-            with open(metrics_file_path, "w") as fout:
-                for index, entry in enumerate(sorted(metrics_entries, key=sort_key)):
-                    if index:
-                        fout.write("\n")
-                    fout.write(json.dumps(entry, ensure_ascii=False))
+            if update_mode:
+                existing_metrics = {}
+                if metrics_file_path.exists():
+                    existing_metrics = {e["id"]: e for e in load_file(metrics_file_path)}
+                for e in metrics_entries:
+                    existing_metrics[e["id"]] = e
+                sorted_metrics = sorted(existing_metrics.values(), key=sort_key)
+                with open(metrics_file_path, "w") as fout:
+                    for e in sorted_metrics:
+                        fout.write(json.dumps(e, ensure_ascii=False) + "\n")
+            else:
+                metrics_entries.sort(key=sort_key)
+                with open(metrics_file_path, "a") as fout:
+                    for e in metrics_entries:
+                        fout.write(json.dumps(e, ensure_ascii=False) + "\n")

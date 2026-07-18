@@ -1380,6 +1380,25 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
             print(f"    ... and {len(selected) - 5} more")
         print()
 
+        # Keep embedding selections in the same per-strategy JSONL log as the
+        # other selectors. This reflects the tools actually available to ranking.
+        log_tool_selection(
+            strategy_name="qwen3_embedding",
+            query=query,
+            available_tools_count=len(all_tools),
+            selected_tools=selected,
+            selection_metadata={
+                "top_k": self.top_k,
+                "cache_hits": cached_count,
+                "runtime_computed": missing_count,
+                "model": self.model,
+                "similarity_scores": {
+                    tool.get("function", {}).get("name", "unknown"): float(score)
+                    for tool, score in zip(selected, selected_scores)
+                },
+            },
+        )
+
         return selected
 
     def setup_embeddings(self, tools: list):

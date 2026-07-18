@@ -199,6 +199,23 @@ def analyze_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def selector_task_metrics(rows: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, float]]:
+    """Sum selector usage for each task across all selector calls/turns."""
+    output: dict[tuple[str, int], dict[str, float]] = defaultdict(
+        lambda: {"input": 0.0, "output": 0.0, "latency": 0.0}
+    )
+    for row in rows:
+        try:
+            key = (str(row["test_entry_id"]), int(row["task_idx"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        metadata = row.get("metadata", {}) or {}
+        output[key]["input"] += numeric_total(metadata.get("selector_input_tokens")) or 0
+        output[key]["output"] += numeric_total(metadata.get("selector_output_tokens")) or 0
+        output[key]["latency"] += numeric_total(metadata.get("selector_latency_s")) or 0
+    return output
+
+
 def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     valid = [x for x in rows.values()]
     return {
@@ -305,7 +322,20 @@ def excel_rows(result_file: Path, metrics_file: Path, data_file: Path, run_name:
         task_types[task_type].append(row)
     result_metrics = aggregate(results)
     selection_file = result_file.parent.parent / "tool_selection_logs.jsonl"
-    selection_metrics = analyze_selection(read_jsonl(selection_file))
+    selection_rows = read_jsonl(selection_file)
+    selection_metrics = analyze_selection(selection_rows)
+    selector_tasks = selector_task_metrics(selection_rows)
+    selector_input_tokens = sum(x["input"] for x in selector_tasks.values())
+    selector_output_tokens = sum(x["output"] for x in selector_tasks.values())
+    selector_latency = sum(x["latency"] for x in selector_tasks.values())
+    for row in tasks:
+        selector = selector_tasks.get((row["Task ID"], row["Task index"]), {"input": 0, "output": 0, "latency": 0})
+        row["Selector input tokens"] = selector["input"]
+        row["Selector output tokens"] = selector["output"]
+        row["Selector total tokens"] = selector["input"] + selector["output"]
+        row["Selector latency (s)"] = selector["latency"]
+        row["Pipeline total tokens"] = row["Total tokens"] + row["Selector total tokens"]
+        row["Pipeline LLM latency (s)"] = row["LLM latency (s)"] + row["Selector latency (s)"]
     benchmark_tasks = len(tasks)
     returned_tasks = sum(row["Returned result"] for row in tasks)
     no_results = sum(row["No result"] for row in tasks)
@@ -338,6 +368,12 @@ def excel_rows(result_file: Path, metrics_file: Path, data_file: Path, run_name:
         "Median selected tools/selection": selection_metrics["selected_median"],
         "Avg emitted tool calls/task": ratio(result_metrics["predicted_calls"], result_metrics["tasks"]),
         "Median emitted tool calls/task": median(len(task.get("predicted_calls", [])) for task in results.values()),
+        "Selector input tokens": selector_input_tokens,
+        "Selector output tokens": selector_output_tokens,
+        "Selector total tokens": selector_input_tokens + selector_output_tokens,
+        "Selector latency (s)": selector_latency,
+        "Pipeline total tokens": result_metrics["total_tokens"] + selector_input_tokens + selector_output_tokens,
+        "Pipeline LLM latency (s)": result_metrics["latency"] + selector_latency,
     }
     type_rows = []
     for task_type, group in sorted(task_types.items()):
@@ -381,8 +417,8 @@ def write_excel(result_root: Path, data_file: Path, output: Path) -> int:
 
     sheets = {"Run Summary": [], "Task Details": [], "By Task Type": []}
     headers = {
-        "Run Summary": ["Run", "Result file", "Metrics file", "Tasks", "Evaluated tasks", "No results", "Error-code results", "Not correct results", "Failed tasks", "Failure rate", "No-result rate", "Error-code rate", "Not-correct rate", "Correct tasks", "Correct task rate", "Coverage rate", "Optimal paths", "Optimal path rate", "Exact tool-call paths", "Exact path rate", "Correct tool calls", "Correct call rate", "Failed tool calls", "Failed tool-call rate", "Total expected tool calls", "Predicted tool calls", "Input tokens", "Output tokens", "Total tokens", "Avg tokens/task", "Median tokens/task", "LLM latency (s)", "Avg latency/task (s)", "Median latency/task (s)", "Wall time (s)", "Tool-call steps", "Avg steps/task", "Selection records", "Avg selected tools/selection", "Median selected tools/selection", "Avg emitted tool calls/task", "Median emitted tool calls/task"],
-        "Task Details": ["Run", "WTB task number", "Task ID", "Task index", "Task reference", "Task type", "Result status", "Returned result", "No result", "Error code", "Not correct", "Correct", "Failed task", "Optimal path", "Exact tool-call path", "Correct tool calls", "Failed tool calls", "Failed tool-call rate", "Total expected tool calls", "Predicted tool calls", "Input tokens", "Output tokens", "Total tokens", "LLM latency (s)", "Wall time (s)", "Steps"],
+        "Run Summary": ["Run", "Result file", "Metrics file", "Tasks", "Evaluated tasks", "No results", "Error-code results", "Not correct results", "Failed tasks", "Failure rate", "No-result rate", "Error-code rate", "Not-correct rate", "Correct tasks", "Correct task rate", "Coverage rate", "Optimal paths", "Optimal path rate", "Exact tool-call paths", "Exact path rate", "Correct tool calls", "Correct call rate", "Failed tool calls", "Failed tool-call rate", "Total expected tool calls", "Predicted tool calls", "Input tokens", "Output tokens", "Total tokens", "Avg tokens/task", "Median tokens/task", "LLM latency (s)", "Avg latency/task (s)", "Median latency/task (s)", "Wall time (s)", "Tool-call steps", "Avg steps/task", "Selection records", "Avg selected tools/selection", "Median selected tools/selection", "Avg emitted tool calls/task", "Median emitted tool calls/task", "Selector input tokens", "Selector output tokens", "Selector total tokens", "Selector latency (s)", "Pipeline total tokens", "Pipeline LLM latency (s)"],
+        "Task Details": ["Run", "WTB task number", "Task ID", "Task index", "Task reference", "Task type", "Result status", "Returned result", "No result", "Error code", "Not correct", "Correct", "Failed task", "Optimal path", "Exact tool-call path", "Correct tool calls", "Failed tool calls", "Failed tool-call rate", "Total expected tool calls", "Predicted tool calls", "Input tokens", "Output tokens", "Total tokens", "Selector input tokens", "Selector output tokens", "Selector total tokens", "Pipeline total tokens", "LLM latency (s)", "Selector latency (s)", "Pipeline LLM latency (s)", "Wall time (s)", "Steps"],
         "By Task Type": ["Run", "Task type", "Tasks", "Evaluated tasks", "No results", "Error-code results", "Not correct results", "Failed tasks", "Failure rate", "No-result rate", "Error-code rate", "Not-correct rate", "Correct tasks", "Correct task rate", "Optimal paths", "Optimal path rate", "Exact tool-call paths", "Exact path rate", "Correct tool calls", "Correct call rate", "Failed tool calls", "Failed tool-call rate", "Total expected tool calls", "Predicted tool calls", "Input tokens", "Output tokens", "Total tokens", "LLM latency (s)", "Wall time (s)"],
     }
     # Existing rows are retained, but a run with the same folder name is replaced.

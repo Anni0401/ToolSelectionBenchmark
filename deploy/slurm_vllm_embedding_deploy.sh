@@ -43,6 +43,13 @@ TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 LOG_DIR="${PROJECT_ROOT}/logs"
 export CHECKPOINT_DIR="${HOME}/.cache/huggingface/hub"
 
+export HF_HOME=/work/aherrman/huggingface
+export HF_HUB_CACHE=/work/aherrman/huggingface/hub
+export HF_XET_CACHE=/work/aherrman/huggingface/xet
+export TMPDIR=/work/aherrman/tmp
+export HF_HUB_DISABLE_XET=1
+mkdir -p $TMPDIR
+
 # Force vLLM v0 engine — the v1 engine (default in vLLM >= 0.6) crashes on
 # embedding models with EngineDeadError / AsyncLLM output_handler failures.
 export VLLM_USE_V1=0

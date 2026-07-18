@@ -5,6 +5,7 @@ import threading
 import urllib.request
 import urllib.error
 import uuid
+import math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from abc import ABC, abstractmethod
 from typing import TypedDict, Any, Optional
@@ -12,6 +13,15 @@ from typing import TypedDict, Any, Optional
 # Per-request context (thread-safe).  Set in do_POST, read by log helpers.
 _request_context = threading.local()
 _log_lock = threading.Lock()
+
+
+def _valid_embedding(value: Any) -> bool:
+    """Return whether an embedding is a non-empty finite numeric vector."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, (int, float)) and math.isfinite(item) for item in value)
+    )
 
 # Load environment variables from .env file
 try:
@@ -1028,6 +1038,7 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
         # Get tool embeddings and compute similarity for ALL VALID TOOLS
         tool_embeddings = []
         tool_descriptions = []
+        valid_tools = []
         cached_count = 0
         missing_count = 0
         
@@ -1056,6 +1067,7 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
             
             tool_embeddings.append(embedding)
             tool_descriptions.append(tool_desc)
+            valid_tools.append(tool)
         
         if not tool_embeddings:
             raise ValueError("No tools with descriptions found for embedding")
@@ -1070,7 +1082,7 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
         seen_tool_names = set()
         
         for idx in sorted_indices:
-            tool = all_tools[idx]
+            tool = valid_tools[idx]
             tool_name = tool.get("function", {}).get("name", "unknown")
             
             # Only add if we haven't seen this tool name yet
@@ -1289,11 +1301,14 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         try:
             query_response = client.embeddings.create(input=query, model=self.model)
             query_embedding = query_response.data[0].embedding
+            if not _valid_embedding(query_embedding):
+                raise ValueError("embedding endpoint returned a non-finite query vector")
         except Exception as e:
             raise RuntimeError(f"Failed to embed query with Qwen3: {e}")
 
         tool_embeddings = []
         tool_descriptions = []
+        valid_tools = []
         cached_count = 0
         missing_count = 0
 
@@ -1303,28 +1318,38 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
             desc = func.get("description", "")
             tool_desc = f"{name}: {desc}"
 
-            if tool_desc in self.embedding_cache:
+            if tool_desc in self.embedding_cache and _valid_embedding(self.embedding_cache[tool_desc]):
                 embedding = self.embedding_cache[tool_desc]
                 cached_count += 1
             else:
+                # Invalid cached vectors (for example NaN values from a failed
+                # endpoint request) must be discarded and recomputed.
                 try:
                     response = client.embeddings.create(
                         input=tool_desc, model=self.model
                     )
                     embedding = response.data[0].embedding
+                    if not _valid_embedding(embedding):
+                        raise ValueError("embedding endpoint returned a non-finite vector")
                     self.embedding_cache[tool_desc] = embedding
                     missing_count += 1
                 except Exception as e:
                     print(f"[WARNING] Failed to embed tool {name}: {e}")
-                    embedding = [0] * len(query_embedding)
+                    continue
 
             tool_embeddings.append(embedding)
             tool_descriptions.append(tool_desc)
+            valid_tools.append(tool)
 
         if not tool_embeddings:
             raise ValueError("No tools with descriptions found for embedding")
 
-        similarities = cosine_similarity([query_embedding], tool_embeddings)[0]
+        try:
+            similarities = cosine_similarity([query_embedding], tool_embeddings)[0]
+        except ValueError as exc:
+            raise RuntimeError(
+                "Embedding similarity failed; query or tool vectors contain invalid values"
+            ) from exc
         sorted_indices = np.argsort(similarities)[::-1]
 
         selected = []
@@ -1332,7 +1357,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         seen_tool_names = set()
 
         for idx in sorted_indices:
-            tool = all_tools[idx]
+            tool = valid_tools[idx]
             tool_name = tool.get("function", {}).get("name", "unknown")
             if tool_name not in seen_tool_names:
                 selected.append(tool)

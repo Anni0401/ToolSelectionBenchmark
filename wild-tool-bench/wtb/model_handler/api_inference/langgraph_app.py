@@ -1590,6 +1590,7 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
         self.base_url = os.getenv("QWEN3_RERANKER_BASE_URL", "http://localhost:8002/v1")
         self.api_key = os.getenv("QWEN3_RERANKER_API_KEY", "EMPTY")
         self.model = os.getenv("QWEN3_RERANKER_MODEL", "Qwen/Qwen3-Reranker-8B")
+        self._last_reranker_results = []
 
     def select(self, messages: list, tools: list) -> list:
         """Select top-k tools using Qwen3-Reranker-8B pairwise scoring."""
@@ -1610,7 +1611,8 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
             selection_metadata={
                 "model": self.model,
                 "top_k": self.top_k,
-                "reranked_count": len(reranked)
+                "reranked_count": len(reranked),
+                "reranker_results": self._last_reranker_results,
             }
         )
         
@@ -1762,6 +1764,14 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
         print(f"  Candidates scored: {len(tools)}")
 
         ranked_pairs = sorted(zip(scores, tools), key=lambda x: x[0], reverse=True)
+        self._last_reranker_results = [
+            {
+                "rank": rank,
+                "tool_name": tool.get("function", {}).get("name", "unknown"),
+                "score": float(score),
+            }
+            for rank, (score, tool) in enumerate(ranked_pairs, start=1)
+        ]
         print(f"  Top-{min(self.top_k, len(ranked_pairs))} after reranking:")
         for i, (score, tool) in enumerate(ranked_pairs[:self.top_k]):
             tool_name = tool.get("function", {}).get("name", "unknown")
@@ -1813,7 +1823,21 @@ class Qwen3EmbeddingWithQwen3RerankerToolSelector(Qwen3RerankerBasedToolSelector
             raise ValueError("No user query found for Qwen3-Reranker tool selection")
 
         reranked = self._rerank_with_qwen3(query, candidates)
-        return reranked[:self.top_k]
+        final_selected = reranked[:self.top_k]
+        log_tool_selection(
+            strategy_name="qwen3_embedding_qwen3_reranker",
+            query=query,
+            available_tools_count=len(tools),
+            selected_tools=final_selected,
+            selection_metadata={
+                "model": self.model,
+                "initial_k": self.initial_k,
+                "top_k": self.top_k,
+                "candidate_count": len(candidates),
+                "reranker_results": self._last_reranker_results,
+            },
+        )
+        return final_selected
 
 
 class Qwen3EmbeddingContextWithQwen3RerankerToolSelector(Qwen3EmbeddingWithQwen3RerankerToolSelector):

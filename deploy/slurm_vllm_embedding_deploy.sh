@@ -37,7 +37,7 @@ fi
 # ── Configuration ─────────────────────────────────────────────────────────────
 export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-Embedding-8B}"
 PORT="${VLLM_EMBEDDING_PORT:-8002}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.4}"
+GPU_MEMORY_UTILIZATION=0.4
 DTYPE="${DTYPE:-float16}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 LOG_DIR="${PROJECT_ROOT}/logs"
@@ -140,7 +140,8 @@ python -m vllm.entrypoints.openai.api_server \
     --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
     --dtype "${DTYPE}" \
     --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-    --max-model-len 8192 \
+    --max-model-len 2048 \
+    --max-num-seqs 4 \
     --enforce-eager \
     --download-dir "${CHECKPOINT_DIR}" \
     --trust-remote-code \

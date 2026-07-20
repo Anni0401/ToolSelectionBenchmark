@@ -1,10 +1,9 @@
 #!/bin/bash
-# Deployment script for Qwen3-Reranker-8B via vLLM
+# Deployment script for Qwen3-Reranker via FastAPI and Transformers.
 # Serves an OpenAI-compatible /v1/score endpoint on a dedicated port.
 #
-# Uses --task score so the server exposes the /v1/score batch endpoint that
-# Qwen3RerankerBasedToolSelector expects.  Fallback to chat completions +
-# logprobs is supported by the selector when this endpoint is unavailable.
+# Loads the sequence-classification model directly on the GPU, avoiding the
+# vLLM version-specific score and --task compatibility issues.
 #
 # Usage:
 #   bash deploy/slurm_vllm_reranker_deploy.sh
@@ -36,9 +35,9 @@ if ! python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2
 fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-Reranker-8B}"
+export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-Reranker-4B}"
 PORT="${VLLM_RERANKER_PORT:-8003}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.80}"
+GPU_MEMORY_UTILIZATION=0.5
 DTYPE="${DTYPE:-float16}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 LOG_DIR="${PROJECT_ROOT}/logs"
@@ -47,10 +46,6 @@ export CHECKPOINT_DIR="${HOME}/.cache/huggingface/hub"
 # Force vLLM v0 engine — the v1 engine (default in vLLM >= 0.6) crashes on
 # cross-encoder models with EngineDeadError / AsyncLLM output_handler failures.
 export VLLM_USE_V1=0
-# Run Triton kernels in interpreter mode — prevents gcc/libcuda.so compilation
-# errors that occur on this cluster where the CUDA driver libs are only available
-# on compute nodes at job start, not during module pre-compilation.
-export TRITON_INTERPRET=1
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "${CHECKPOINT_DIR}"
@@ -75,13 +70,13 @@ fi
 echo "[INFO] GPU status:"
 nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
 
-# ── Check vLLM is installed ───────────────────────────────────────────────────
-if ! python -c "import vllm" 2>/dev/null; then
-    echo "[ERROR] vLLM not found in ${VENV_DIR}."
-    echo "        Run 'bash deploy/uv_setup.sh --vllm' to install it."
+# ── Check FastAPI/Transformers are installed ─────────────────────────────────
+if ! python -c "import fastapi, transformers, torch" 2>/dev/null; then
+    echo "[ERROR] FastAPI, Transformers, or PyTorch is missing in ${VENV_DIR}."
+    echo "        Install with: pip install fastapi uvicorn transformers torch"
     exit 1
 fi
-echo "[INFO] vLLM version: $(python -c 'import vllm; print(vllm.__version__)')"
+
 
 # ── Download / verify model weights ──────────────────────────────────────────
 echo "[INFO] Verifying model weights for ${MODEL_NAME}..."
@@ -102,7 +97,7 @@ except Exception as e:
     print(f"[INFO]    vLLM will attempt to download everything automatically.")
 PYTHON_EOF
 
-# ── Write a convenience env-var snippet ──────────────────────────────────────
+
 HOSTNAME=$(hostname -f)
 RERANKER_ENDPOINT="http://${HOSTNAME}:${PORT}/v1"
 
@@ -118,25 +113,13 @@ EOF
 echo "[INFO] Endpoint info saved to: ${ENDPOINT_FILE}"
 cat "${ENDPOINT_FILE}"
 
-# ── Start vLLM reranker server ────────────────────────────────────────────────
-# --task score enables the /v1/score batch endpoint used by
-# Qwen3RerankerBasedToolSelector._score_batch_via_score_endpoint().
-# Qwen3-Reranker-8B fits in ~20 GB VRAM at float16 on a single A40.
+# ── Start FastAPI reranker server ─────────────────────────────────────────────
+# The model is loaded directly through Transformers on the GPU and the server
+# implements the /v1/score contract expected by LangGraph.
 echo ""
-echo "[INFO] Starting vLLM reranker server..."
-echo "[INFO] Logs → ${LOG_DIR}/vllm_reranker_server.log"
+echo "[INFO] Starting FastAPI reranker server..."
+echo "[INFO] Logs → ${LOG_DIR}/fastapi_reranker_server.log"
 echo ""
-
-python -m vllm.entrypoints.openai.api_server \
-    --model "${MODEL_NAME}" \
-    --task score \
-    --port "${PORT}" \
-    --host 0.0.0.0 \
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-    --dtype "${DTYPE}" \
-    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-    --max-model-len 8192 \
-    --enforce-eager \
-    --download-dir "${CHECKPOINT_DIR}" \
-    --trust-remote-code \
-    2>&1 | tee -a "${LOG_DIR}/vllm_reranker_server.log"
+export MODEL_NAME CHECKPOINT_DIR PORT
+python "${SCRIPT_DIR}/fastapi_qwen3_reranker.py" \
+    2>&1 | tee -a "${LOG_DIR}/fastapi_reranker_server.log"

@@ -305,7 +305,7 @@ def main(model, result_dir, score_dir):
     if score_dir is None:
         score_dir = SCORE_PATH
     else:
-        result_dir = (PROJECT_ROOT / score_dir).resolve()
+        score_dir = (PROJECT_ROOT / score_dir).resolve()
 
     runner(model, result_dir, score_dir)
 

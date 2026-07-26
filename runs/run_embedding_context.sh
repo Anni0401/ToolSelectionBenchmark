@@ -56,6 +56,7 @@ sed -i "s|^QWEN3_EMBEDDING_BASE_URL=.*|QWEN3_EMBEDDING_BASE_URL=http://${HOST}:8
 
 sed -i "s|^LANGGRAPH_TOOL_SELECTION_MODE=.*|LANGGRAPH_TOOL_SELECTION_MODE=qwen3_embedding_context|" "${PROJECT_ROOT}/wild-tool-bench/.env"
 
+
 ####################################################
 # Cleanup
 ####################################################

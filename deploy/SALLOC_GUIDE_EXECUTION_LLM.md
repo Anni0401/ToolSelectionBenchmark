@@ -55,13 +55,7 @@ salloc \
   --time=24:00:00
 ```
 
-> **Note:** `openai/gpt-oss-120b` is a 120B Mixture-of-Experts model. In BF16 the weights
-> occupy ~240 GB. 4× H200 (141 GB each = 564 GB total) provides ample VRAM with room for
-> KV cache. The H200 nodes have 8 GPUs per node; requesting 4 is sufficient and avoids
-> occupying the full node.
 
-Once the allocation is granted, SLURM will drop you into an interactive shell on the
-compute node. Note the **hostname** (e.g. `dws-15`) — you will need it later.
 
 ---
 
@@ -73,41 +67,22 @@ cd /home/ma/ma_ma/ma_aherrman/ToolSelectionBenchmark
 # $WORK has 1 TiB quota (NVMe) — store the venv and pip artifacts there
 # to avoid filling the 100 GiB $HOME quota.
 VENV_DIR="${WORK}/venvs/venv-gptoss"
+
+# pip / temporary files
 export TMPDIR="${WORK}/tmp_pip"
 export PIP_CACHE_DIR="${WORK}/tmp_pip/cache"
-mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}"
 
-# First time only: create the dedicated gpt-oss venv
-if [ ! -d "${VENV_DIR}" ]; then
-    export PATH="${HOME}/.local/bin:${PATH}"
-    # install uv if missing
-    command -v uv &>/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-    uv venv "${VENV_DIR}" --python 3.12 --seed   # --seed bootstraps pip into the venv
-    source "${VENV_DIR}/bin/activate"
-    # Step 1: install torch nightly (cu128) — latest available build.
-    # The gptoss wheel pins an old nightly that is no longer in the index,
-    # so we install torch first and then bypass the pin with --no-deps.
-    python -m pip install --pre torch \
-      --index-url https://download.pytorch.org/whl/nightly/cu128
-    # Step 2: install vllm gpt-oss wheel without dependency resolution
-    # (the wheel's torch pin refers to an archived nightly; newer torch is compatible)
-    python -m pip install --pre "vllm==0.10.1+gptoss" --no-deps \
-      --extra-index-url https://wheels.vllm.ai/gpt-oss/ \
-      --extra-index-url https://download.pytorch.org/whl/nightly/cu128
-    # Step 3: install remaining vllm runtime dependencies (excluding torch)
-    python -m pip install \
-      "aiohttp" "blake3" "fastapi" "httpx" "numpy" "openai" \
-      "pillow" "prometheus-client" "pydantic>=2" "ray>=2.9" \
-      "regex" "requests" "sentencepiece" "tiktoken" \
-      "transformers>=4.45" "triton" "xformers" 2>/dev/null || true
-    python -m pip install cloudpickle
-    python -m pip install msgspec
-    python -m pip install cachetools
-    python -m pip install cbor2
-    python -m pip install psutil
-    python -m pip install setproctitle 
-    python -m pip install pybase64
-fi
+# Hugging Face / model cache
+export HF_HOME="${WORK}/huggingface"
+export HF_HUB_CACHE="${HF_HOME}/hub"
+export HF_XET_CACHE="${HF_HOME}/xet"
+
+mkdir -p \
+    "${TMPDIR}" \
+    "${PIP_CACHE_DIR}" \
+    "${HF_HUB_CACHE}" \
+    "${HF_XET_CACHE}"
+
 
 source "${VENV_DIR}/bin/activate"
 ```
@@ -151,9 +126,9 @@ vllm serve "${GPT_OSS_20B}" \
 
 ```bash
 # If gpt-oss-120b weights are cached locally, use the snapshot path analogously:
-# GPT_OSS_120B="${WORK}/huggingface/hub/models--openai--gpt-oss-120b/snapshots/<hash>"
+GPT_OSS_120B="${WORK}/huggingface/hub/models--openai--gpt-oss-120b/snapshots/<hash>"
 vllm serve openai/gpt-oss-120b \
-  --tensor-parallel-size 4 \
+  --tensor-parallel-size 1\
   --dtype bfloat16 \
   --gpu-memory-utilization 0.90 \
   --enforce-eager \

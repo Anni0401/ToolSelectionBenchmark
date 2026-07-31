@@ -96,6 +96,7 @@ class LangGraphHandler(BaseHandler):
         # LangGraph may provide explicit token accounting, or we fallback to 0.
         input_token = api_response.get("input_token", 0)
         output_token = api_response.get("output_token", 0)
+        selection_metrics = api_response.get("selection_metrics", {}) or {}
 
         return {
             "reasoning_content": reasoning_content,
@@ -103,6 +104,7 @@ class LangGraphHandler(BaseHandler):
             "tool_calls": tool_calls,
             "input_token": input_token,
             "output_token": output_token,
+            "selection_metrics": selection_metrics,
         }
 
     def _normalize_tool_calls(self, tool_calls):

@@ -29,6 +29,19 @@ def _compute_metrics(task_results: list) -> dict:
     total_output = 0
     total_llm_latency = 0.0
     total_wall_time = 0.0
+    selection_totals = {
+        "embedding_query_input_tokens": 0,
+        "embedding_tool_input_tokens": 0,
+        "embedding_input_tokens": 0,
+        "embedding_output_tokens": 0,
+        "embedding_total_tokens": 0,
+        "reranker_input_tokens": 0,
+        "reranker_output_tokens": 0,
+        "reranker_total_tokens": 0,
+        "selector_input_tokens": 0,
+        "selector_output_tokens": 0,
+        "selector_total_tokens": 0,
+    }
     per_task = []
 
     for i, t in enumerate(task_results):
@@ -36,6 +49,10 @@ def _compute_metrics(task_results: list) -> dict:
         out = sum(t.get("output_token_count", []))
         llm_lat = round(sum(t.get("latency", [])), 3)
         wall = t.get("task_wall_time_s", 0.0)
+        selection = t.get("selection_metrics", [])
+        selection_usage = {key: sum((m or {}).get(key, 0) or 0 for m in selection) for key in selection_totals}
+        for key, value in selection_usage.items():
+            selection_totals[key] += value
 
         per_task.append({
             "task_idx": i,
@@ -45,6 +62,7 @@ def _compute_metrics(task_results: list) -> dict:
             "llm_latency_s": llm_lat,
             "task_wall_time_s": wall,
             "steps": len(t.get("latency", [])),
+            **selection_usage,
         })
 
         total_input += inp
@@ -60,6 +78,7 @@ def _compute_metrics(task_results: list) -> dict:
         "total_wall_time_s": round(total_wall_time, 3),
         "num_tasks": len(task_results),
         "per_task": per_task,
+        **selection_totals,
     }
 
 

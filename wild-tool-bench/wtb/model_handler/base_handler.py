@@ -224,6 +224,7 @@ class BaseHandler:
         latency = []
         input_token_count = []
         output_token_count = []
+        selection_metrics = []
         while True:
             print("-" * 100, flush=True)
             print(
@@ -242,6 +243,7 @@ class BaseHandler:
             latency.append(query_latency)
             input_token_count.append(input_token)
             output_token_count.append(output_token)
+            selection_metrics.append(model_response_data.get("selection_metrics", {}))
 
             # print(f"Output：", flush=True)
             # print(f"reasoning_content: \n{reasoning_content}\n", flush=True)
@@ -513,7 +515,8 @@ class BaseHandler:
             "inference_log": inference_log,
             "latency": latency,
             "input_token_count": input_token_count,
-            "output_token_count": output_token_count
+            "output_token_count": output_token_count,
+            "selection_metrics": selection_metrics
         }
 
     @final

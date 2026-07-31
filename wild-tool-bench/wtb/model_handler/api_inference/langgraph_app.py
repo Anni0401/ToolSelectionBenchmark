@@ -189,6 +189,22 @@ def log_tool_selection(strategy_name: str, query: str, available_tools_count: in
         print(f"[WARNING] Failed to log tool selection: {e}")
 
 
+def _embedding_usage(response) -> dict:
+    """Extract embedding input-token usage when the provider exposes it."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {"prompt_tokens": 0, "total_tokens": 0}
+    if isinstance(usage, dict):
+        return {
+            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "total_tokens": int(usage.get("total_tokens", 0) or 0),
+        }
+    return {
+        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+    }
+
+
 # ==================== Tool Selection Strategies ====================
 
 class ToolSelector(ABC):
@@ -255,7 +271,6 @@ class InContextToolSelector(ToolSelector):
         
         # Log tool selection
         log_tool_selection(
-            strategy_name="in_context",
             query=query,
             available_tools_count=len(all_tools),
             selected_tools=all_tools,
@@ -289,6 +304,7 @@ class HierarchicalToolSelector(ToolSelector):
         self.endpoint = os.getenv("LANGGRAPH_SELECTOR_LLM_ENDPOINT")
         self.api_key = os.getenv("LANGGRAPH_SELECTOR_LLM_API_KEY")
         self.model = os.getenv("LANGGRAPH_SELECTOR_LLM_MODEL", "Qwen/Qwen3-30B-A3B")
+        self.last_selection_metrics = {}
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
             "tool_schemas_cache.json"
@@ -341,6 +357,13 @@ Return a JSON array of at most 10 tool names that are most relevant, e.g. ["getT
 Return ONLY the JSON array, no other text."""
         
         response, selector_usage, selector_latency = self._invoke_selector_llm(selection_prompt)
+        selector_input_tokens = int(selector_usage.get("prompt_tokens", 0) or 0)
+        selector_output_tokens = int(selector_usage.get("completion_tokens", 0) or 0)
+        self.last_selection_metrics = {
+            "selector_input_tokens": selector_input_tokens,
+            "selector_output_tokens": selector_output_tokens,
+            "selector_total_tokens": selector_input_tokens + selector_output_tokens,
+        }
         # Strip <think>...</think> blocks produced by reasoning models (e.g. Qwen3)
         import re as _re
         clean = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL).strip()
@@ -364,8 +387,8 @@ Return ONLY the JSON array, no other text."""
             selection_metadata={
                 "model": self.model,
                 "selected_tool_names": selected_names,
-                "selector_input_tokens": selector_usage.get("prompt_tokens"),
-                "selector_output_tokens": selector_usage.get("completion_tokens"),
+                "selector_input_tokens": selector_input_tokens,
+                "selector_output_tokens": selector_output_tokens,
                 "selector_latency_s": selector_latency,
             }
         )
@@ -1031,6 +1054,7 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
                 input=query,
                 model=self.model
             )
+            query_usage = _embedding_usage(query_response)
             query_embedding = query_response.data[0].embedding
         except Exception as e:
             raise RuntimeError(f"Failed to embed query: {e}")
@@ -1041,6 +1065,7 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
         valid_tools = []
         cached_count = 0
         missing_count = 0
+        tool_input_tokens = 0
         
         for tool in all_tools:
             func = tool.get("function", {})
@@ -1058,6 +1083,7 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
                         input=tool_desc,
                         model=self.model
                     )
+                    tool_input_tokens += _embedding_usage(response)["prompt_tokens"]
                     embedding = response.data[0].embedding
                     self.embedding_cache[tool_desc] = embedding
                     missing_count += 1
@@ -1108,6 +1134,14 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
         if len(selected) > 5:
             print(f"    ... and {len(selected) - 5} more")
         print()
+
+        self.last_selection_metrics = {
+            "embedding_query_input_tokens": query_usage["prompt_tokens"],
+            "embedding_tool_input_tokens": tool_input_tokens,
+            "embedding_input_tokens": query_usage["prompt_tokens"] + tool_input_tokens,
+            "embedding_output_tokens": 0,
+            "embedding_total_tokens": query_usage["prompt_tokens"] + tool_input_tokens,
+        }
         
         # Log tool selection
         log_tool_selection(
@@ -1256,6 +1290,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         self.base_url = os.getenv("QWEN3_EMBEDDING_BASE_URL", "http://localhost:8001/v1")
         self.model = os.getenv("QWEN3_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
         self.embedding_cache = {}
+        self.last_selection_metrics = {}
         self.tools_cache = None
         self._load_cache()
         self._load_valid_tools_from_schema_cache()
@@ -1300,6 +1335,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
 
         try:
             query_response = client.embeddings.create(input=query, model=self.model)
+            query_usage = _embedding_usage(query_response)
             query_embedding = query_response.data[0].embedding
             if not _valid_embedding(query_embedding):
                 raise ValueError("embedding endpoint returned a non-finite query vector")
@@ -1311,6 +1347,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         valid_tools = []
         cached_count = 0
         missing_count = 0
+        tool_input_tokens = 0
 
         for tool in all_tools:
             func = tool.get("function", {})
@@ -1328,6 +1365,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                     response = client.embeddings.create(
                         input=tool_desc, model=self.model
                     )
+                    tool_input_tokens += _embedding_usage(response)["prompt_tokens"]
                     embedding = response.data[0].embedding
                     if not _valid_embedding(embedding):
                         raise ValueError("embedding endpoint returned a non-finite vector")
@@ -1380,6 +1418,15 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
             print(f"    ... and {len(selected) - 5} more")
         print()
 
+        embedding_metrics = {
+            "embedding_query_input_tokens": query_usage["prompt_tokens"],
+            "embedding_tool_input_tokens": tool_input_tokens,
+            "embedding_input_tokens": query_usage["prompt_tokens"] + tool_input_tokens,
+            "embedding_output_tokens": 0,
+            "embedding_total_tokens": query_usage["prompt_tokens"] + tool_input_tokens,
+        }
+        self.last_selection_metrics = embedding_metrics
+
         # Keep embedding selections in the same per-strategy JSONL log as the
         # other selectors. This reflects the tools actually available to ranking.
         log_tool_selection(
@@ -1396,6 +1443,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                     tool.get("function", {}).get("name", "unknown"): float(score)
                     for tool, score in zip(selected, selected_scores)
                 },
+                **embedding_metrics,
             },
         )
 
@@ -1591,6 +1639,8 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
         self.api_key = os.getenv("QWEN3_RERANKER_API_KEY", "EMPTY")
         self.model = os.getenv("QWEN3_RERANKER_MODEL", "Qwen/Qwen3-Reranker-8B")
         self._last_reranker_results = []
+        self._last_reranker_metrics = {}
+        self.last_selection_metrics = {}
 
     def select(self, messages: list, tools: list) -> list:
         """Select top-k tools using Qwen3-Reranker-8B pairwise scoring."""
@@ -1601,6 +1651,13 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
             raise ValueError("No user query found for Qwen3-Reranker tool selection")
         reranked = self._rerank_with_qwen3(query, tools)
         final_selected = reranked[:self.top_k]
+        self.last_selection_metrics = {
+            **self._last_reranker_metrics,
+            "reranker_total_tokens": (
+                self._last_reranker_metrics.get("reranker_input_tokens", 0)
+                + self._last_reranker_metrics.get("reranker_output_tokens", 0)
+            ),
+        }
         
         # Log tool selection
         log_tool_selection(
@@ -1664,6 +1721,11 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
         req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        self._last_reranker_metrics = {
+            "reranker_input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "reranker_output_tokens": int(usage.get("completion_tokens", 0) or 0),
+        }
 
         scores_data = data.get("data", [])
         scores_data.sort(key=lambda x: x.get("index", 0))
@@ -1707,6 +1769,11 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
         with urllib.request.urlopen(req, timeout=30) as resp:
             parsed = json.loads(resp.read().decode("utf-8"))
 
+        usage = parsed.get("usage", {}) if isinstance(parsed, dict) else {}
+        self._last_reranker_metrics = {
+            "reranker_input_tokens": self._last_reranker_metrics.get("reranker_input_tokens", 0) + int(usage.get("prompt_tokens", 0) or 0),
+            "reranker_output_tokens": self._last_reranker_metrics.get("reranker_output_tokens", 0) + int(usage.get("completion_tokens", 0) or 0),
+        }
         choices = parsed.get("choices", [])
         if not choices:
             return 0.0
@@ -1735,6 +1802,7 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
     def _rerank_with_qwen3(self, query: str, tools: list) -> list:
         """Score all candidate tools and return them sorted by descending relevance score."""
         tool_docs = [self._format_document(t) for t in tools]
+        self._last_reranker_metrics = {"reranker_input_tokens": 0, "reranker_output_tokens": 0}
         scores = None
 
         # Attempt 1: batch scoring via /v1/score endpoint
@@ -1824,6 +1892,14 @@ class Qwen3EmbeddingWithQwen3RerankerToolSelector(Qwen3RerankerBasedToolSelector
 
         reranked = self._rerank_with_qwen3(query, candidates)
         final_selected = reranked[:self.top_k]
+        self.last_selection_metrics = {
+            **self.embedding_selector.last_selection_metrics,
+            **self._last_reranker_metrics,
+            "reranker_total_tokens": (
+                self._last_reranker_metrics.get("reranker_input_tokens", 0)
+                + self._last_reranker_metrics.get("reranker_output_tokens", 0)
+            ),
+        }
         log_tool_selection(
             strategy_name="qwen3_embedding_qwen3_reranker",
             query=query,
@@ -1835,6 +1911,7 @@ class Qwen3EmbeddingWithQwen3RerankerToolSelector(Qwen3RerankerBasedToolSelector
                 "top_k": self.top_k,
                 "candidate_count": len(candidates),
                 "reranker_results": self._last_reranker_results,
+                **self.last_selection_metrics,
             },
         )
         return final_selected
@@ -2250,6 +2327,7 @@ def _build_graph(mode: str = "in_context"):
         selection_mode: str
         input_tokens: int
         output_tokens: int
+        selection_metrics: dict
 
     builder = StateGraph(GraphState)
     selector = _create_tool_selector(mode)
@@ -2259,7 +2337,10 @@ def _build_graph(mode: str = "in_context"):
         messages = state.get("messages", [])
         tools = state.get("tools", [])
         selected = selector.select(messages, tools)
-        return {"selected_tools": selected}
+        metrics = getattr(selector, "last_selection_metrics", None)
+        if not metrics and hasattr(selector, "embedding_selector"):
+            metrics = getattr(selector.embedding_selector, "last_selection_metrics", {})
+        return {"selected_tools": selected, "selection_metrics": metrics or {}}
 
     def llm_execution_node(state: GraphState):
         """Node 2: Execute LLM with selected tools."""
@@ -2274,6 +2355,7 @@ def _build_graph(mode: str = "in_context"):
             "tool_calls": tool_calls,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "selection_metrics": state.get("selection_metrics", {}),
         }
 
     # Build graph with both nodes
@@ -2345,6 +2427,7 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
             print(f"  Using default graph (mode: {_default_mode})")
 
         start = time.time()
+        selection_metrics = {}
         try:
             if graph is not None:
                 # Execute graph with state
@@ -2365,11 +2448,13 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
                     tool_calls = result.get("tool_calls") or []
                     input_tokens = result.get("input_tokens", 0)
                     output_tokens = result.get("output_tokens", 0)
+                    selection_metrics = result.get("selection_metrics", {}) or {}
                 else:
                     content = str(result)
                     tool_calls = []
                     input_tokens = 0
                     output_tokens = 0
+                    selection_metrics = {}
             else:
                 # Fallback: invoke LLM directly if graph not available
                 content, tool_calls, input_tokens, output_tokens = _invoke_llm(messages, tools)
@@ -2389,6 +2474,7 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
             "tool_calls": tool_calls,
             "input_token": input_tokens,
             "output_token": output_tokens,
+            "selection_metrics": selection_metrics,
             "latency": latency,
             "selection_mode": selection_mode,
         }

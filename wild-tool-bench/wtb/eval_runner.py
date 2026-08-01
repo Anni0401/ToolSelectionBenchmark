@@ -25,13 +25,13 @@ def params_checker(result):
         step_data = inference_log[key]
         inference_input = step_data["inference_input"]
         inference_output = step_data["inference_output"]
-        inference_answer = step_data["inference_answer"]
 
         current_action_name_label = inference_output["current_action_name_label"]
         if current_action_name_label == "error":
             break
 
         # At this stage, action_name is guaranteed to be correct, so the size of candidate_answer_function_list will always be 1.
+        inference_answer = step_data["inference_answer"]
         candidate_answer_function = inference_answer["candidate_0_answer_function_list"]
         assert "candidate_1_answer_function_list" not in inference_answer
 
@@ -267,12 +267,32 @@ def runner(model_names, result_dir, score_dir):
 
         print(f"Model: {model_name}")
 
+        all_test_entries = load_file(PROMPT_PATH)
+
         score_results = []
         model_result_jsonl = subdir / os.path.basename(PROMPT_PATH).replace(".jsonl", "_result.jsonl")
         model_results = load_file(model_result_jsonl, sort_by_id=True)
+        failed_ids = []
         for model_result in model_results:
             id_ = model_result["id"]
-            results = model_result["result"]
+            results = model_result.get("result")
+
+            if not isinstance(results, list):
+                # Inference failed entirely for this test case (e.g., the
+                # LangGraph/model server returned an error), so "result" is
+                # an error string instead of the expected list of per-turn
+                # results. Treat every turn of this session as incorrect so
+                # it still contributes to the totals instead of crashing.
+                failed_ids.append(id_)
+                index = int(id_.rsplit("_", 1)[1])
+                num_turns = len(all_test_entries[index]["answer_list"])
+                results = [
+                    {"label": "error", "is_optimal": False, "inference_log": {}}
+                    for _ in range(num_turns)
+                ]
+                score_results.append({"id": id_, "results": results})
+                continue
+
             for result in results:
                 action_name_label, action_arguments_label = params_checker(result)
                 if action_name_label == "error" or action_arguments_label == "error":
@@ -286,11 +306,14 @@ def runner(model_names, result_dir, score_dir):
 
             score_results.append({"id": id_, "results": results})
 
+        if failed_ids:
+            print(f"[WARNING] {len(failed_ids)} test case(s) had no valid result "
+                  f"(counted as incorrect): {failed_ids}")
+
         output_file_name = os.path.basename(PROMPT_PATH).replace(".jsonl", "_score.jsonl")
         output_file_dir = score_dir / model_name
         write_list_of_dicts_to_file(output_file_name, score_results, output_file_dir)
 
-        all_test_entries = load_file(PROMPT_PATH)
         metric_info = calc_accuracy(model_name, all_test_entries, score_results)
         metric_file_name = os.path.basename(PROMPT_PATH).replace(".jsonl", "_metric.json")
         write_dicts_to_file(metric_file_name, metric_info, output_file_dir)

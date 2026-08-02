@@ -2249,10 +2249,13 @@ def _invoke_llm(messages: list, tools: list = None):
 
         except urllib.error.HTTPError as exc:
             error_data = exc.read().decode("utf-8")
+            error_lower = error_data.lower()
             is_harmony_error = (
                 exc.code == 500 and (
-                    "harmonyerror" in error_data.lower()
-                    or "unexpected tokens" in error_data.lower()
+                    "harmonyerror" in error_lower
+                    or "unexpected tokens" in error_lower
+                    or "unexpected token" in error_lower
+                    or "expecting start token" in error_lower
                     or "to=functions." in error_data
                 )
             )

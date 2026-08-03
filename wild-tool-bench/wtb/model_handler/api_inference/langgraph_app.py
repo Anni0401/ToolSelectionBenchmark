@@ -1957,6 +1957,21 @@ class Qwen3EmbeddingContextWithQwen3RerankerToolSelector(Qwen3EmbeddingWithQwen3
 _RAW_MODEL_TOKENS = ("<|end|>", "<|start|>", "<|channel|>", "<|endoftext|>")
 
 
+def _build_harmony_retry_plan(base_reasoning: str) -> list:
+    """Return staged retry settings to recover from Harmony parser errors.
+
+    The first request remains deterministic (temp=0.0).  Subsequent retries
+    increase temperature and force stricter output behavior to reduce malformed
+    `to=functions.*` headers with chain-of-thought text.
+    """
+    return [
+        {"temperature": 0.0, "reasoning": base_reasoning, "strict_tool_calling": False},
+        {"temperature": 0.3, "reasoning": "low", "strict_tool_calling": True},
+        {"temperature": 0.7, "reasoning": "low", "strict_tool_calling": True},
+        {"temperature": 1.0, "reasoning": "none", "strict_tool_calling": True},
+    ]
+
+
 def _normalize_messages_for_llm(messages: list) -> list:
     """Normalize messages to standard OpenAI format before sending to vLLM.
 
@@ -2188,14 +2203,37 @@ def _invoke_llm(messages: list, tools: list = None):
     # Use env var EXECUTING_LLM_TIMEOUT (seconds) or default to 600 (10 min).
     _timeout = int(os.getenv("EXECUTING_LLM_TIMEOUT", "600"))
 
-    # On HarmonyError (the model writes chain-of-thought inside the tool-call header,
-    # breaking vLLM's parser), retry with progressively higher temperature so the
-    # model generates a different – hopefully well-formed – output.
-    # At temperature 0.0 the model is deterministic and will always reproduce the
-    # same broken output, so any retry must use temp > 0.
-    _harmony_retry_temps = [0.3, 0.7]  # temperatures to try after the initial 0.0 attempt
+    # On HarmonyError (the model writes chain-of-thought inside the tool-call
+    # header, breaking vLLM's parser), retry with a staged plan that raises
+    # temperature and forces stricter tool-calling behavior.
+    _harmony_retry_plan = _build_harmony_retry_plan(reasoning)
 
-    for _attempt in range(1 + len(_harmony_retry_temps)):  # 0 = original, 1/2 = retries
+    for _attempt, _retry_cfg in enumerate(_harmony_retry_plan):
+        if _attempt > 0:
+            payload["temperature"] = _retry_cfg["temperature"]
+
+            # Refresh/override leading system prompt for the retry attempt.
+            if payload["messages"] and payload["messages"][0].get("role") == "system":
+                payload["messages"][0] = {
+                    "role": "system",
+                    "content": f"Reasoning: {_retry_cfg['reasoning']}",
+                }
+
+            if _retry_cfg.get("strict_tool_calling"):
+                strict_guardrail = {
+                    "role": "system",
+                    "content": (
+                        "For tool use, return only valid OpenAI tool calls. "
+                        "Do not output raw headers like 'to=functions.*' and do not "
+                        "include chain-of-thought in tool-call headers."
+                    ),
+                }
+                if len(payload["messages"]) < 2 or payload["messages"][1] != strict_guardrail:
+                    payload["messages"].insert(1, strict_guardrail)
+
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+
         try:
             with urllib.request.urlopen(req, timeout=_timeout) as resp:
                 data = resp.read().decode("utf-8")
@@ -2259,13 +2297,13 @@ def _invoke_llm(messages: list, tools: list = None):
                     or "to=functions." in error_data
                 )
             )
-            if is_harmony_error and _attempt < len(_harmony_retry_temps):
-                retry_temp = _harmony_retry_temps[_attempt]
-                print(f"[HARMONY-RETRY] Attempt {_attempt + 1} failed with HarmonyError. "
-                      f"Retrying with temperature={retry_temp} ...")
-                payload["temperature"] = retry_temp
-                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+            if is_harmony_error and _attempt < (len(_harmony_retry_plan) - 1):
+                next_cfg = _harmony_retry_plan[_attempt + 1]
+                print(
+                    f"[HARMONY-RETRY] Attempt {_attempt + 1} failed with HarmonyError. "
+                    f"Retrying with temperature={next_cfg['temperature']} "
+                    f"reasoning={next_cfg['reasoning']} strict={next_cfg['strict_tool_calling']} ..."
+                )
                 continue  # retry the loop
 
             print(f"[ERROR] LLM HTTP Error {exc.code}: {exc.reason}")

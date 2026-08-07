@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import traceback
+from threading import Lock
 from contextlib import asynccontextmanager
 import torch
 from fastapi import FastAPI, HTTPException
@@ -24,12 +25,21 @@ from transformers import (
 )
 
 
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen3-Reranker-4B")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen3-Reranker-8B")
 MODEL_CACHE_DIR = os.getenv("CHECKPOINT_DIR", os.path.expanduser("~/.cache/huggingface/hub"))
-MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "2048"))
-BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "8"))
+MAX_LENGTH = int(os.getenv("RERANKER_MAX_LENGTH", "1024"))
+BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "1"))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
+
+_dtype_name = os.getenv("DTYPE", "bfloat16").lower()
+if DEVICE == "cpu":
+    DTYPE = torch.float32
+elif _dtype_name in {"bfloat16", "bf16"}:
+    DTYPE = torch.bfloat16
+elif _dtype_name in {"float16", "fp16", "half"}:
+    DTYPE = torch.float16
+else:
+    raise ValueError(f"Unsupported DTYPE={_dtype_name!r}")
 
 TASK_INSTRUCTION = (
     "Given a user query about tool usage, retrieve the most relevant tool "
@@ -72,11 +82,18 @@ def _prompt(query: str, document: str) -> str:
 class Reranker:
     def __init__(self) -> None:
         print(f"[RERANKER] Loading {MODEL_NAME} on {DEVICE} ({DTYPE})")
+        self._inference_lock = Lock()
         self.tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_NAME, cache_dir=MODEL_CACHE_DIR, trust_remote_code=True
+            MODEL_NAME,
+            cache_dir=MODEL_CACHE_DIR,
+            trust_remote_code=True,
+            local_files_only=True,
         )
         config = AutoConfig.from_pretrained(
-            MODEL_NAME, cache_dir=MODEL_CACHE_DIR, trust_remote_code=True
+            MODEL_NAME,
+            cache_dir=MODEL_CACHE_DIR,
+            trust_remote_code=True,
+            local_files_only=True,
         )
         # Qwen3-Reranker checkpoints may omit a pad token. Batched
         # sequence-classification requires one for left/right padding.
@@ -96,6 +113,9 @@ class Reranker:
                 cache_dir=MODEL_CACHE_DIR,
                 torch_dtype=DTYPE,
                 trust_remote_code=True,
+                local_files_only=True,
+                attn_implementation="eager",
+                low_cpu_mem_usage=True,
             )
             self.model_kind = "classification"
         else:
@@ -104,6 +124,9 @@ class Reranker:
                 cache_dir=MODEL_CACHE_DIR,
                 torch_dtype=DTYPE,
                 trust_remote_code=True,
+                local_files_only=True,
+                attn_implementation="eager",
+                low_cpu_mem_usage=True,
             )
             self.model_kind = "causal"
             # Use the official Qwen3-Reranker prefix/suffix. In particular,
@@ -124,12 +147,17 @@ class Reranker:
             )
         if self.model.config.pad_token_id is None:
             self.model.config.pad_token_id = self.tokenizer.pad_token_id
+        self.model.config.use_cache = False
         self.model.to(DEVICE)
         self.model.eval()
         print("[RERANKER] Model ready")
 
-    @torch.inference_mode()
     def score(self, query: str, documents: list[str]) -> list[float]:
+        with self._inference_lock:
+            return self._score_locked(query, documents)
+
+    @torch.inference_mode()
+    def _score_locked(self, query: str, documents: list[str]) -> list[float]:
         scores: list[float] = []
         for start in range(0, len(documents), BATCH_SIZE):
             batch_docs = documents[start : start + BATCH_SIZE]
@@ -149,7 +177,7 @@ class Reranker:
                     )
                 encoded = self.tokenizer.pad(batch_inputs, padding=True, return_tensors="pt")
                 encoded = {key: value.to(DEVICE) for key, value in encoded.items()}
-                output = self.model(**encoded, return_dict=True)
+                output = self.model(**encoded, return_dict=True, use_cache=False)
                 logits = output.logits[:, -1, :]
                 true_logits = logits[:, self.true_token_id]
                 false_logits = logits[:, self.false_token_id]
@@ -157,6 +185,7 @@ class Reranker:
                     torch.stack([false_logits, true_logits], dim=1), dim=1
                 )[:, 1]
                 scores.extend(float(value) for value in batch_scores.detach().cpu())
+                del encoded, output, logits, true_logits, false_logits, batch_scores
                 continue
 
             texts = []
@@ -183,7 +212,7 @@ class Reranker:
                 return_tensors="pt",
             )
             encoded = {key: value.to(DEVICE) for key, value in encoded.items()}
-            output = self.model(**encoded, return_dict=True)
+            output = self.model(**encoded, return_dict=True, use_cache=False)
             logits = output.logits
             if logits.ndim == 3:
                 # Be tolerant of causal-model style sequence logits: use the
@@ -203,6 +232,7 @@ class Reranker:
             else:
                 batch_scores = torch.sigmoid(logits[:, 0])
             scores.extend(float(value) for value in batch_scores.detach().cpu())
+            del encoded, output, logits, batch_scores
         return scores
 
 

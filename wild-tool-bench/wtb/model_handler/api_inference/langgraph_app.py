@@ -331,6 +331,37 @@ class HierarchicalToolSelector(ToolSelector):
             print(f"[WARNING] Schema cache file not found: {self.schema_cache_file}")
             self.tools_cache = []
     
+    def _serialize_messages_for_selector(self, messages: list) -> str:
+        """Render the full conversation history for the selector prompt."""
+        rendered = []
+        for idx, msg in enumerate(messages, start=1):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = json.dumps(content, ensure_ascii=False)
+            elif not isinstance(content, str):
+                content = str(content)
+            content = content.strip()
+            if not content:
+                continue
+            rendered.append(f"{idx}. {role}: {content}")
+        return "\n".join(rendered) if rendered else "(no conversation history)"
+
+    def _build_selector_prompt(self, messages: list, tools: list) -> str:
+        """Build a prompt that includes the full conversation history for tool selection."""
+        tool_descriptions = self._format_tools(tools)
+        conversation_history = self._serialize_messages_for_selector(messages)
+        return f"""Given the conversation so far, select the most relevant tools from the available list. /no_think
+
+Conversation History:
+{conversation_history}
+
+Available Tools:
+{tool_descriptions}
+
+Return a JSON array of at most 10 tool names that are most relevant, e.g. ["getTool1", "getTool2"].
+Return ONLY the JSON array, no other text."""
+
     def select(self, messages: list, tools: list) -> list:
         """Use a small LLM to select relevant tools from all 618 valid tools."""
         if not self.endpoint:
@@ -342,19 +373,8 @@ class HierarchicalToolSelector(ToolSelector):
         if not all_tools:
             return []
         
-        # Build prompt for tool selection
         query = self._extract_query(messages)
-        tool_descriptions = self._format_tools(all_tools)
-        
-        selection_prompt = f"""Given the user query, select the most relevant tools from the available list. /no_think
-        
-User Query: {query}
-
-Available Tools:
-{tool_descriptions}
-
-Return a JSON array of at most 10 tool names that are most relevant, e.g. ["getTool1", "getTool2"].
-Return ONLY the JSON array, no other text."""
+        selection_prompt = self._build_selector_prompt(messages, all_tools)
         
         response, selector_usage, selector_latency = self._invoke_selector_llm(selection_prompt)
         selector_input_tokens = int(selector_usage.get("prompt_tokens", 0) or 0)
@@ -493,6 +513,320 @@ Return ONLY the JSON array, no other text."""
         except Exception as exc:
             print(f"[ERROR] Selector request failed: {type(exc).__name__}: {exc}")
             raise RuntimeError(f"Selector LLM request failed: {exc}")
+
+
+class ToolReActToolSelector(ToolSelector):
+    """Strategy: ReAct-style iterative tool retrieval with the executing LLM.
+
+    The selector runs a bounded ReAct loop where the model can call exactly one
+    registered tool ("tool_retreiver") with a subquery. That tool performs
+    Qwen3-Embedding retrieval over the full tool catalog and returns candidates.
+    The model may iterate, refine subqueries, and finally return a JSON array of
+    tool names to use.
+    """
+
+    SYSTEM_PROMPT = (
+        "You are a ReAct-style tool selection agent for benchmark tasks. "
+        "Your goal is to decide which tools should be available to the executor model.\n\n"
+        "Tools:\n"
+        "- You may use exactly one callable tool: tool_retreiver(subquery: string, k?: integer).\n"
+        "- Use it to retrieve candidate tools relevant to a focused subquery.\n"
+        "- You may call tool_retreiver multiple times and refine subqueries across iterations.\n\n"
+        "Process (ReAct policy):\n"
+        "1) Think about whether retrieval is needed.\n"
+        "2) If needed, call tool_retreiver.\n"
+        "3) Read observations, update your plan, and optionally retrieve again.\n"
+        "4) Aggregate information from all previous observations.\n"
+        "5) Finish when confident.\n\n"
+        "Output requirements:\n"
+        "- Final output must be ONLY a JSON array of tool names.\n"
+        "- Example: [\"getWeather\", \"getForecast\"]\n"
+        "- If no tools are needed, output []\n"
+        "- Do not output markdown, explanations, or extra keys in the final output."
+    )
+
+    def __init__(self, schema_cache_file: str = None, max_iter: int = 10):
+        self.max_iter = int(os.getenv("LANGGRAPH_TOOLREAGT_MAX_ITER", str(max_iter)))
+        self.schema_cache_file = schema_cache_file or os.path.join(
+            os.path.dirname(__file__),
+            "tool_schemas_cache.json"
+        )
+        self.tools_cache = None
+        self.last_selection_metrics = {}
+        self._embedding_retriever = Qwen3EmbeddingBasedToolSelector(top_k=5, schema_cache_file=self.schema_cache_file)
+        self._load_schema_cache()
+
+    def _load_schema_cache(self):
+        """Load all valid tools from schema cache file."""
+        if os.path.exists(self.schema_cache_file):
+            try:
+                with open(self.schema_cache_file, "r") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and "tools" in data:
+                        self.tools_cache = data["tools"]
+                    else:
+                        self.tools_cache = data if isinstance(data, list) else []
+                print(f"[TOOLREAGT SELECTOR] Loaded {len(self.tools_cache)} valid tools from schema cache")
+            except Exception as e:
+                print(f"[WARNING] Failed to load schema cache for toolreagt: {e}")
+                self.tools_cache = []
+        else:
+            print(f"[WARNING] Schema cache file not found for toolreagt: {self.schema_cache_file}")
+            self.tools_cache = []
+
+    def _extract_full_conversation(self, messages: list) -> str:
+        """Extract full multi-turn context for selector reasoning."""
+        parts = []
+        for msg in messages:
+            role = str(msg.get("role", "")).upper()
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                parts.append(f"[{role}]: {content}")
+        return "\n".join(parts)[:8000] if parts else ""
+
+    def _tool_retriever_schema(self) -> list:
+        """Return the single allowed tool schema for ReAct retrieval."""
+        return [{
+            "type": "function",
+            "function": {
+                "name": "tool_retreiver",
+                "description": (
+                    "Retrieve semantically relevant tools for a subquery. "
+                    "Use this when you need candidate tools before final selection."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subquery": {
+                            "type": "string",
+                            "description": "Focused retrieval query for tools."
+                        },
+                        "k": {
+                            "type": "integer",
+                            "description": "Optional number of tools to retrieve."
+                        }
+                    },
+                    "required": ["subquery"]
+                }
+            }
+        }]
+
+    def _parse_tool_args(self, raw_args: Any) -> dict:
+        if isinstance(raw_args, dict):
+            return raw_args
+        if isinstance(raw_args, str):
+            try:
+                parsed = json.loads(raw_args)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _retrieve_candidates(self, all_tools: list, subquery: str, requested_k: Any) -> tuple[list, int]:
+        """Run embedding retrieval with dynamic k derived from the tool call."""
+        k = None
+        if isinstance(requested_k, (int, float)):
+            k = int(requested_k)
+        if k is None or k <= 0:
+            # Dynamic default (no fixed retrieval count)
+            k = min(len(all_tools), 100)
+
+        self._embedding_retriever.top_k = k
+        candidates = self._embedding_retriever.select(
+            [{"role": "user", "content": subquery}],
+            all_tools,
+        )
+        return candidates, k
+
+    def _serialize_candidates(self, candidates: list) -> list:
+        """Compact tool records sent back to the selector LLM."""
+        serialized = []
+        for tool in candidates:
+            func = tool.get("function", {})
+            serialized.append({
+                "name": func.get("name", "unknown"),
+                "description": func.get("description", ""),
+            })
+        return serialized
+
+    def _parse_final_tool_names(self, response_text: str) -> list:
+        """Parse final model response as a JSON array of tool names."""
+        if not isinstance(response_text, str) or not response_text.strip():
+            raise ValueError("toolreagt selector did not return a final tool list")
+
+        import re as _re
+        clean = _re.sub(r"<think>.*?</think>", "", response_text, flags=_re.DOTALL).strip()
+
+        parsed = None
+        try:
+            parsed = json.loads(clean)
+        except Exception:
+            match = _re.search(r"\[.*\]", clean, _re.DOTALL)
+            if match:
+                parsed = json.loads(match.group())
+
+        if not isinstance(parsed, list):
+            raise ValueError(f"toolreagt selector final response is not a JSON list: {clean[:200]}")
+
+        names = []
+        seen = set()
+        for item in parsed:
+            if not isinstance(item, str):
+                continue
+            name = item.strip()
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+
+    def select(self, messages: list, tools: list) -> list:
+        """Run iterative ReAct-style retrieval and return mapped real tools."""
+        all_tools = self.tools_cache if self.tools_cache else tools
+        if not all_tools:
+            return []
+
+        conversation = self._extract_full_conversation(messages)
+        if not conversation:
+            raise ValueError("No conversation context found for toolreagt selection")
+
+        react_messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Full benchmark task conversation (multi-turn):\n"
+                    f"{conversation}\n\n"
+                    "Follow a ReAct loop over tool_retreiver calls when needed. "
+                    "Use observations from previous retrieval rounds to refine subqueries. "
+                    "Final answer must be ONLY a JSON array of tool names aggregated from your full reasoning process."
+                ),
+            },
+        ]
+
+        iterations = []
+        final_response_text = ""
+        total_input_tokens = 0
+        total_output_tokens = 0
+
+        for iteration in range(1, self.max_iter + 1):
+            response_text, tool_calls, in_tok, out_tok = _invoke_llm(
+                react_messages,
+                self._tool_retriever_schema(),
+            )
+            total_input_tokens += int(in_tok or 0)
+            total_output_tokens += int(out_tok or 0)
+            final_response_text = response_text or final_response_text
+
+            assistant_msg = {"role": "assistant", "content": response_text or ""}
+            if tool_calls:
+                assistant_msg["tool_calls"] = tool_calls
+            react_messages.append(assistant_msg)
+
+            iter_log = {
+                "iteration": iteration,
+                "tool_calls": [],
+                "assistant_content_preview": (response_text or "")[:200],
+            }
+
+            if not tool_calls:
+                iterations.append(iter_log)
+                break
+
+            for tc in tool_calls:
+                func = tc.get("function", {}) if isinstance(tc, dict) else {}
+                name = func.get("name", "") if isinstance(func, dict) else ""
+                if name not in ("tool_retreiver", "tool_retriever"):
+                    raise ValueError(
+                        "toolreagt selector called unsupported tool; only 'tool_retreiver' is allowed"
+                    )
+
+                args = self._parse_tool_args(func.get("arguments", {}))
+                subquery = args.get("subquery") or args.get("query") or ""
+                if not isinstance(subquery, str) or not subquery.strip():
+                    raise ValueError("tool_retreiver call is missing non-empty 'subquery'")
+
+                candidates, effective_k = self._retrieve_candidates(all_tools, subquery, args.get("k"))
+                serialized = self._serialize_candidates(candidates)
+
+                tool_content = json.dumps(
+                    {
+                        "subquery": subquery,
+                        "requested_k": args.get("k"),
+                        "effective_k": effective_k,
+                        "retrieved_k": len(serialized),
+                        "tools": serialized,
+                    },
+                    ensure_ascii=False,
+                )
+
+                react_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", f"tool_call_{iteration}"),
+                        "name": "tool_retreiver",
+                        "content": tool_content,
+                    }
+                )
+
+                iter_log["tool_calls"].append(
+                    {
+                        "name": "tool_retreiver",
+                        "subquery": subquery,
+                        "requested_k": args.get("k"),
+                        "effective_k": effective_k,
+                        "retrieved_k": len(serialized),
+                        "retrieved_tool_names": [t["name"] for t in serialized],
+                    }
+                )
+
+            iterations.append(iter_log)
+        else:
+            raise RuntimeError(
+                f"toolreagt selector reached max_iter={self.max_iter} without finalizing a tool list"
+            )
+
+        selected_names = self._parse_final_tool_names(final_response_text)
+
+        # Mapping exactly like hierarchical strategy: filter real tool objects by name.
+        selected = [
+            tool for tool in all_tools
+            if tool.get("function", {}).get("name") in selected_names
+        ]
+
+        self.last_selection_metrics = {
+            "toolreagt_iterations": len(iterations),
+            "toolreagt_max_iter": self.max_iter,
+            "toolreagt_input_tokens": total_input_tokens,
+            "toolreagt_output_tokens": total_output_tokens,
+            "toolreagt_total_tokens": total_input_tokens + total_output_tokens,
+        }
+
+        log_tool_selection(
+            strategy_name="toolreagt",
+            query=conversation,
+            available_tools_count=len(all_tools),
+            selected_tools=selected,
+            selection_metadata={
+                "selected_tool_names_from_llm": selected_names,
+                "mapped_selected_count": len(selected),
+                "iterations": iterations,
+                **self.last_selection_metrics,
+            },
+        )
+
+        print(f"\n[TOOLREAGT SELECTOR]")
+        print(f"  Conversation length: {len(conversation)}")
+        print(f"  Available tools: {len(all_tools)}")
+        print(f"  Iterations: {len(iterations)}/{self.max_iter}")
+        print(f"  LLM selected names: {len(selected_names)}")
+        print(f"  Mapped tools: {len(selected)}")
+        for tool in selected[:10]:
+            print(f"    - {tool.get('function', {}).get('name', 'unknown')}")
+        if len(selected) > 10:
+            print(f"    ... and {len(selected) - 10} more")
+        print()
+
+        return selected
 
 
 class EmbeddingBasedToolSelector(ToolSelector):
@@ -2324,6 +2658,8 @@ def _create_tool_selector(mode: str) -> ToolSelector:
     
     if mode == "hierarchical":
         return HierarchicalToolSelector()
+    elif mode == "toolreagt":
+        return ToolReActToolSelector(max_iter=10)
     elif mode == "embedding":
         return OpenAIEmbeddingBasedToolSelector(top_k=5)
     elif mode == "embedding_context":
@@ -2536,6 +2872,7 @@ def run(host="127.0.0.1", port=8001):
     print(f"\nAvailable modes:")
     print(f"  1. 'in_context' - LLM decides which tools to use (default)")
     print(f"  2. 'hierarchical' - Smaller LLM selects relevant tools first")
+    print(f"  2.1. 'toolreagt' - ReAct selector using tool_retreiver iterations")
     print(f"  3. 'embedding' - OpenAI text-embedding-3-small (cached)")
     print(f"  4. 'embedding_reranker' - Embeddings + LLM reranking")
     print(f"\nOpenAI Embedding Configuration (for mode 'embedding'):")

@@ -10,9 +10,10 @@ from wtb.model_handler.base_handler import BaseHandler
 class LangGraphHandler(BaseHandler):
     """Handler for LangGraph-based tool calling.
     
-    Supports 4 tool selection strategies:
+    Supports multiple tool selection strategies, including:
     1. 'in_context' - LLM decides which tools to use (default)
     2. 'hierarchical' - Smaller LLM selects relevant tools first
+    3. 'toolreagt' - ReAct selector with iterative embedding retrieval
     3. 'embedding' - Embedding-based tool retrieval
     4. 'embedding_reranker' - Embeddings + LLM reranking
     """
@@ -43,6 +44,7 @@ class LangGraphHandler(BaseHandler):
         Supports configurable tool selection strategy:
         - in_context: all tools passed, LLM decides
         - hierarchical: smaller LLM selects tools first
+        - toolreagt: ReAct loop with tool_retreiver over embedding retrieval
         - embedding: embedding-based retrieval
         - embedding_reranker: embeddings + LLM reranking
         """

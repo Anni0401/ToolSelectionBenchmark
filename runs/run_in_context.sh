@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=wtb-embedding
+#SBATCH --job-name=wtb-incontext
 #SBATCH --partition=gpu-vram-94gb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

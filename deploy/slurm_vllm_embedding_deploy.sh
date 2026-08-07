@@ -1,18 +1,7 @@
 #!/bin/bash
 # Deployment script for Qwen3-Embedding-8B via vLLM
-# Serves an OpenAI-compatible /v1/embeddings endpoint on a dedicated port.
-#
-# This is separate from slurm_vllm_deploy.sh (which hosts the LLM on port 8000).
-# Run this on an interactive or SLURM-allocated GPU node.
-#
-# Usage:
-#   bash deploy/slurm_vllm_embedding_deploy.sh
-#
-# Override defaults via env vars, e.g.:
-#   MODEL_NAME=Qwen/Qwen3-Embedding-8B VLLM_EMBEDDING_PORT=8001 \
-#     bash deploy/slurm_vllm_embedding_deploy.sh
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -20,7 +9,8 @@ VENV_DIR="${PROJECT_ROOT}/.venv"
 
 # ── Activate virtual environment ──────────────────────────────────────────────
 export PATH="${HOME}/.local/bin:${PATH}"
-if [ -f "${VENV_DIR}/bin/activate" ]; then
+
+if [[ -f "${VENV_DIR}/bin/activate" ]]; then
     source "${VENV_DIR}/bin/activate"
     echo "[INFO] Activated uv venv: ${VENV_DIR}"
 else
@@ -29,37 +19,50 @@ else
     exit 1
 fi
 
-if ! python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+if ! python -c \
+    "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" \
+    2>/dev/null; then
+
     echo "[ERROR] Python 3.10+ is required."
     exit 1
 fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-Embedding-8B}"
+
 PORT="${VLLM_EMBEDDING_PORT:-8002}"
-GPU_MEMORY_UTILIZATION=0.4
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.4}"
 DTYPE="${DTYPE:-float16}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
+
 LOG_DIR="${PROJECT_ROOT}/logs"
-export CHECKPOINT_DIR="${HOME}/.cache/huggingface/hub"
 
-export HF_HOME=/work/aherrman/huggingface
-export HF_HUB_CACHE=/work/aherrman/huggingface/hub
-export HF_XET_CACHE=/work/aherrman/huggingface/xet
-export TMPDIR=/work/aherrman/tmp
+# Keep every Hugging Face and vLLM download in the same cache.
+export HF_HOME="${HF_HOME:-${WORK}/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
+export HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
+
+# vLLM --download-dir must point to the same Hugging Face hub cache.
+export CHECKPOINT_DIR="${HF_HUB_CACHE}"
+
+export TMPDIR="${TMPDIR:-${WORK}/tmp}"
 export HF_HUB_DISABLE_XET=1
-mkdir -p $TMPDIR
+export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-300}"
+export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-60}"
 
-# Force vLLM v0 engine — the v1 engine (default in vLLM >= 0.6) crashes on
-# embedding models with EngineDeadError / AsyncLLM output_handler failures.
+mkdir -p \
+    "${TMPDIR}" \
+    "${HF_HOME}" \
+    "${HF_HUB_CACHE}" \
+    "${HF_XET_CACHE}" \
+    "${CHECKPOINT_DIR}" \
+    "${LOG_DIR}"
+
+# Force vLLM v0 engine.
 export VLLM_USE_V1=0
-# Run Triton kernels in interpreter mode — prevents gcc/libcuda.so compilation
-# errors that occur on this cluster where the CUDA driver libs are only available
-# on compute nodes at job start, not during module pre-compilation.
-export TRITON_INTERPRET=1
 
-mkdir -p "${LOG_DIR}"
-mkdir -p "${CHECKPOINT_DIR}"
+# Avoid Triton compilation issues on this cluster.
+export TRITON_INTERPRET=1
 
 echo "=========================================="
 echo "vLLM Qwen3-Embedding-8B Deployment"
@@ -69,17 +72,23 @@ echo "Port:                   ${PORT}"
 echo "GPU Memory Utilization: ${GPU_MEMORY_UTILIZATION}"
 echo "Data Type:              ${DTYPE}"
 echo "Tensor Parallel Size:   ${TENSOR_PARALLEL_SIZE}"
+echo "HF Home:                ${HF_HOME}"
+echo "HF Hub Cache:           ${HF_HUB_CACHE}"
 echo "Checkpoint Dir:         ${CHECKPOINT_DIR}"
 echo "Log Dir:                ${LOG_DIR}"
+echo "CUDA_VISIBLE_DEVICES:   ${CUDA_VISIBLE_DEVICES:-not set}"
 echo "=========================================="
 
 # ── Check GPU availability ────────────────────────────────────────────────────
-if ! command -v nvidia-smi &> /dev/null; then
+if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "[ERROR] nvidia-smi not found. GPU not available."
     exit 1
 fi
+
 echo "[INFO] GPU status:"
-nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
+nvidia-smi \
+    --query-gpu=index,name,memory.total,memory.free \
+    --format=csv
 
 # ── Check vLLM is installed ───────────────────────────────────────────────────
 if ! python -c "import vllm" 2>/dev/null; then
@@ -87,33 +96,38 @@ if ! python -c "import vllm" 2>/dev/null; then
     echo "        Run 'bash deploy/uv_setup.sh --vllm' to install it."
     exit 1
 fi
+
 echo "[INFO] vLLM version: $(python -c 'import vllm; print(vllm.__version__)')"
 
-# ── Download / verify model weights ──────────────────────────────────────────
-echo "[INFO] Verifying model weights for ${MODEL_NAME}..."
-python << 'PYTHON_EOF'
+# ── Verify model files ────────────────────────────────────────────────────────
+echo "[INFO] Verifying model files for ${MODEL_NAME}..."
+
+python <<'PYTHON_EOF'
 import os
-from transformers import AutoTokenizer
+from huggingface_hub import snapshot_download
 
-model_name  = os.environ.get("MODEL_NAME",     "Qwen/Qwen3-Embedding-8B")
-cache_dir   = os.environ.get("CHECKPOINT_DIR", os.path.expanduser("~/.cache/huggingface/hub"))
+model_name = os.environ["MODEL_NAME"]
+cache_dir = os.environ["HF_HUB_CACHE"]
 
-print(f"[INFO] Downloading / verifying tokenizer for {model_name} ...")
-try:
-    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-    print(f"[SUCCESS] Tokenizer OK – vocab size: {tokenizer.vocab_size}")
-    print(f"[INFO]    Full model weights will be downloaded by vLLM on first start.")
-except Exception as e:
-    print(f"[WARNING] Could not verify tokenizer: {e}")
-    print(f"[INFO]    vLLM will attempt to download everything automatically.")
+print(f"[INFO] Model: {model_name}")
+print(f"[INFO] Cache: {cache_dir}")
+
+path = snapshot_download(
+    repo_id=model_name,
+    cache_dir=cache_dir,
+    local_files_only=True,
+)
+
+print(f"[SUCCESS] Model snapshot available at: {path}")
 PYTHON_EOF
 
-# ── Write a convenience env-var snippet ──────────────────────────────────────
-HOSTNAME=$(hostname -f)
+# ── Write endpoint information ────────────────────────────────────────────────
+HOSTNAME="$(hostname -f)"
 EMBEDDING_ENDPOINT="http://${HOSTNAME}:${PORT}/v1"
 
 ENDPOINT_FILE="${LOG_DIR}/embedding_endpoint.txt"
-cat > "${ENDPOINT_FILE}" << EOF
+
+cat > "${ENDPOINT_FILE}" <<EOF
 Embedding server: ${EMBEDDING_ENDPOINT}
 
 Environment variables to set before running the LangGraph server:
@@ -121,13 +135,11 @@ Environment variables to set before running the LangGraph server:
   export QWEN3_EMBEDDING_MODEL=${MODEL_NAME}
   export LANGGRAPH_TOOL_SELECTION_MODE=qwen3_embedding
 EOF
+
 echo "[INFO] Endpoint info saved to: ${ENDPOINT_FILE}"
 cat "${ENDPOINT_FILE}"
 
 # ── Start vLLM embedding server ───────────────────────────────────────────────
-# Qwen3-Embedding-8B fits in ~20 GB VRAM at float16, so a single A40/A100 is fine.
-# Note: --task embed is NOT used here — older vLLM versions do not support it and
-# Qwen3-Embedding-8B is auto-detected as an embedding model from its architecture.
 echo ""
 echo "[INFO] Starting vLLM embedding server..."
 echo "[INFO] Logs → ${LOG_DIR}/vllm_embedding_server.log"

@@ -132,6 +132,26 @@ class LangGraphHandler(BaseHandler):
                 )
                 continue
 
+            # Accept Copilot-style payload shape:
+            # {"recipient_name": "functions.<name>", "parameters": {...}}
+            if isinstance(tool_call, dict) and "recipient_name" in tool_call:
+                recipient = str(tool_call.get("recipient_name", "")).strip()
+                name = recipient
+                if recipient.startswith("functions."):
+                    name = recipient[len("functions."):]
+                if "." in name:
+                    name = name.split(".")[-1]
+                normalized.append(
+                    {
+                        "id": tool_call.get("id", f"toolu_bdrk_{idx}"),
+                        "function": {
+                            "name": name,
+                            "arguments": tool_call.get("parameters", tool_call.get("arguments", {})),
+                        },
+                    }
+                )
+                continue
+
             raise ValueError(f"Unsupported tool call format from LangGraph: {tool_call}")
 
         return normalized

@@ -271,6 +271,7 @@ class InContextToolSelector(ToolSelector):
         
         # Log tool selection
         log_tool_selection(
+            strategy_name="in_context",
             query=query,
             available_tools_count=len(all_tools),
             selected_tools=all_tools,
@@ -2291,19 +2292,44 @@ class Qwen3EmbeddingContextWithQwen3RerankerToolSelector(Qwen3EmbeddingWithQwen3
 _RAW_MODEL_TOKENS = ("<|end|>", "<|start|>", "<|channel|>", "<|endoftext|>")
 
 
-def _build_harmony_retry_plan(base_reasoning: str) -> list:
-    """Return staged retry settings to recover from Harmony parser errors.
+def _detect_tool_call_parser(model_name: str) -> str:
+    """Infer the active tool-call parser mode for executor-specific safeguards.
 
-    The first request remains deterministic (temp=0.0).  Subsequent retries
-    increase temperature and force stricter output behavior to reduce malformed
-    `to=functions.*` headers with chain-of-thought text.
+    Priority:
+    1) Explicit env override via EXECUTING_LLM_TOOL_CALL_PARSER
+    2) Heuristic from model name
     """
-    return [
-        {"temperature": 0.0, "reasoning": base_reasoning, "strict_tool_calling": False},
-        {"temperature": 0.3, "reasoning": "low", "strict_tool_calling": True},
-        {"temperature": 0.7, "reasoning": "low", "strict_tool_calling": True},
-        {"temperature": 1.0, "reasoning": "none", "strict_tool_calling": True},
-    ]
+    parser = (os.getenv("EXECUTING_LLM_TOOL_CALL_PARSER", "auto") or "auto").strip().lower()
+    if parser and parser != "auto":
+        return parser
+
+    model_l = (model_name or "").lower()
+    if "poolside" in model_l or "laguna" in model_l:
+        return "poolside_v1"
+    return "openai"
+
+
+def _build_execution_system_prompt(reasoning: str, model_name: str) -> str:
+    """Build a concise, strict system prompt that pushes the model toward valid tool calls."""
+    model_l = (model_name or "").lower()
+    base = (
+        "You are a tool-using assistant. For every tool use, emit exactly one standard OpenAI "
+        "tool-call object with keys 'id', 'type', and 'function'. The 'function' object must "
+        "contain 'name' and a JSON-string 'arguments'. Do not emit raw headers, do not emit "
+        "chain-of-thought in tool-call fields, and do not mix plain text with tool-call syntax. "
+        "If a tool call is needed, return only the tool call in the required format."
+    )
+    if "poolside" in model_l or "laguna" in model_l:
+        return (
+            f"{base} "
+            "For Poolside/Laguna models, follow the native tool-call syntax expected by the backend: "
+            "use standard OpenAI tool calls and avoid any alternative header-style or raw parser-specific syntax."
+        )
+    return (
+        f"{base} "
+        "For standard OpenAI-compatible backends, prefer the standard OpenAI tool-call format and "
+        "do not use any alternative raw headers or parser-specific wrappers."
+    )
 
 
 def _normalize_messages_for_llm(messages: list) -> list:
@@ -2390,6 +2416,26 @@ def _normalize_messages_for_llm(messages: list) -> list:
                         "function": {"name": tc["name"], "arguments": args},
                     })
 
+                elif "recipient_name" in tc:
+                    # Copilot-style format: {"recipient_name": "functions.X", "parameters": {...}}
+                    recipient = str(tc.get("recipient_name", "")).strip()
+                    name = recipient
+                    if recipient.startswith("functions."):
+                        name = recipient[len("functions."):]
+                    if "." in name:
+                        name = name.split(".")[-1]
+                    args = tc.get("parameters", tc.get("arguments", {}))
+                    if isinstance(args, dict):
+                        args = json.dumps(args, ensure_ascii=False)
+                    elif not isinstance(args, str):
+                        args = json.dumps(args, ensure_ascii=False)
+                    call_id = tc.get("id") or f"call_{name}_{idx}"
+                    new_tool_calls.append({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": args},
+                    })
+
                 else:
                     # Unknown format – keep as-is and log a warning.
                     print(f"[NORMALIZE] Unknown tool_call format (keys={list(tc.keys())}), keeping as-is: "
@@ -2471,6 +2517,24 @@ def _normalize_returned_tool_calls(tool_calls: list) -> list:
                 "type": "function",
                 "function": {"name": tc["name"], "arguments": args},
             })
+        elif "recipient_name" in tc:
+            recipient = str(tc.get("recipient_name", "")).strip()
+            name = recipient
+            if recipient.startswith("functions."):
+                name = recipient[len("functions."):]
+            if "." in name:
+                name = name.split(".")[-1]
+            args = tc.get("parameters", tc.get("arguments", {}))
+            if isinstance(args, dict):
+                args = json.dumps(args, ensure_ascii=False)
+            elif not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False)
+            call_id = tc.get("id") or f"call_{name}_{idx}"
+            result.append({
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": args},
+            })
         else:
             result.append(tc)
     return result
@@ -2484,6 +2548,7 @@ def _invoke_llm(messages: list, tools: list = None):
     base_url = os.getenv("EXECUTING_LLM_BASE_URL")
     api_key = os.getenv("EXECUTING_LLM_API_KEY", "EMPTY")
     model = os.getenv("EXECUTING_LLM_MODEL", "openai/gpt-oss-120b")
+    parser_mode = _detect_tool_call_parser(model)
     
     if not base_url:
         # Simulated response for testing without a real LLM
@@ -2493,11 +2558,19 @@ def _invoke_llm(messages: list, tools: list = None):
     # Build full chat completions endpoint from base URL
     endpoint = base_url.rstrip("/") + "/chat/completions"
 
-    # Prepend reasoning system prompt if not already present
+    # Prepend a strict execution-system prompt if not already present.
     reasoning = os.getenv("EXECUTING_LLM_REASONING", "medium")
     messages_to_send = list(messages)
     if not messages_to_send or messages_to_send[0].get("role") != "system":
-        messages_to_send.insert(0, {"role": "system", "content": f"Reasoning: {reasoning}"})
+        messages_to_send.insert(0, {
+            "role": "system",
+            "content": _build_execution_system_prompt(reasoning, model)
+        })
+    else:
+        messages_to_send[0] = {
+            "role": "system",
+            "content": _build_execution_system_prompt(reasoning, model)
+        }
 
     # Normalize all messages: convert any to=functions.X tool calls to standard format
     # before sending to vLLM, which would otherwise reject them with a 500.
@@ -2535,119 +2608,69 @@ def _invoke_llm(messages: list, tools: list = None):
     req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
     # Large tool sets (1000+ tools) can take several minutes to process.
     # Use env var EXECUTING_LLM_TIMEOUT (seconds) or default to 600 (10 min).
-    _timeout = int(os.getenv("EXECUTING_LLM_TIMEOUT", "600"))
+    _timeout = int(os.getenv("EXECUTING_LLM_TIMEOUT", "1800"))
 
-    # On HarmonyError (the model writes chain-of-thought inside the tool-call
-    # header, breaking vLLM's parser), retry with a staged plan that raises
-    # temperature and forces stricter tool-calling behavior.
-    _harmony_retry_plan = _build_harmony_retry_plan(reasoning)
+    try:
+        with urllib.request.urlopen(req, timeout=_timeout) as resp:
+            data = resp.read().decode("utf-8")
+            print(f"[DEBUG] LLM response status: {resp.status}")
+            try:
+                parsed = json.loads(data)
+            except Exception as e:
+                print(f"[DEBUG] Failed to parse JSON: {e}")
+                return data, [], 0, 0
 
-    for _attempt, _retry_cfg in enumerate(_harmony_retry_plan):
-        if _attempt > 0:
-            payload["temperature"] = _retry_cfg["temperature"]
+            # Extract content
+            content = ""
+            if isinstance(parsed, dict) and "content" in parsed:
+                content = parsed["content"] or ""
+            elif isinstance(parsed, dict) and "choices" in parsed and parsed["choices"]:
+                first = parsed["choices"][0]
+                if isinstance(first, dict) and "message" in first:
+                    msg = first["message"]
+                    if isinstance(msg, dict) and "content" in msg:
+                        content = msg["content"] or ""
 
-            # Refresh/override leading system prompt for the retry attempt.
-            if payload["messages"] and payload["messages"][0].get("role") == "system":
-                payload["messages"][0] = {
-                    "role": "system",
-                    "content": f"Reasoning: {_retry_cfg['reasoning']}",
-                }
+            # Extract tool calls if present
+            tool_calls = []
+            if isinstance(parsed, dict) and "tool_calls" in parsed:
+                tool_calls = parsed["tool_calls"]
+            elif isinstance(parsed, dict) and "choices" in parsed and parsed["choices"]:
+                first = parsed["choices"][0]
+                if isinstance(first, dict) and "message" in first:
+                    msg = first["message"]
+                    if isinstance(msg, dict) and "tool_calls" in msg:
+                        tool_calls = msg["tool_calls"]
 
-            if _retry_cfg.get("strict_tool_calling"):
-                strict_guardrail = {
-                    "role": "system",
-                    "content": (
-                        "For tool use, return only valid OpenAI tool calls. "
-                        "Do not output raw headers like 'to=functions.*' and do not "
-                        "include chain-of-thought in tool-call headers."
-                    ),
-                }
-                if len(payload["messages"]) < 2 or payload["messages"][1] != strict_guardrail:
-                    payload["messages"].insert(1, strict_guardrail)
+            # Extract token usage
+            usage = parsed.get("usage") or {}
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
 
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+            print(f"[DEBUG] Extracted content length: {len(content)}, tool_calls: {len(tool_calls)}, tokens: {input_tokens}/{output_tokens}")
+            # Strip special tokens from the returned content so it is safe to store
+            # in message history and re-send in subsequent turns.
+            for token in _RAW_MODEL_TOKENS:
+                if token in content:
+                    content = content[:content.index(token)].rstrip()
+            # Normalize returned tool calls to standard format so they are safe to store
+            # in message history and re-send in subsequent turns.
+            tool_calls = _normalize_returned_tool_calls(tool_calls)
+            if tool_calls:
+                print(f"[DEBUG] Tool calls returned: {[tc.get('function', {}).get('name') if isinstance(tc, dict) else tc for tc in tool_calls]}")
+            log_tool_calls(messages_to_send, tool_calls, content, input_tokens, output_tokens, model=model)
+            return content, tool_calls, input_tokens, output_tokens
 
-        try:
-            with urllib.request.urlopen(req, timeout=_timeout) as resp:
-                data = resp.read().decode("utf-8")
-                print(f"[DEBUG] LLM response status: {resp.status}")
-                try:
-                    parsed = json.loads(data)
-                except Exception as e:
-                    print(f"[DEBUG] Failed to parse JSON: {e}")
-                    return data, [], 0, 0
+    except urllib.error.HTTPError as exc:
+        error_data = exc.read().decode("utf-8")
+        print(f"[ERROR] LLM HTTP Error {exc.code}: {exc.reason}")
+        print(f"[ERROR] Response body: {error_data[:500]}")
+        raise RuntimeError(f"LLM request failed: {exc.code} {exc.reason} - {error_data[:200]}")
 
-                # Extract content
-                content = ""
-                if isinstance(parsed, dict) and "content" in parsed:
-                    content = parsed["content"] or ""
-                elif isinstance(parsed, dict) and "choices" in parsed and parsed["choices"]:
-                    first = parsed["choices"][0]
-                    if isinstance(first, dict) and "message" in first:
-                        msg = first["message"]
-                        if isinstance(msg, dict) and "content" in msg:
-                            content = msg["content"] or ""
-
-                # Extract tool calls if present
-                tool_calls = []
-                if isinstance(parsed, dict) and "tool_calls" in parsed:
-                    tool_calls = parsed["tool_calls"]
-                elif isinstance(parsed, dict) and "choices" in parsed and parsed["choices"]:
-                    first = parsed["choices"][0]
-                    if isinstance(first, dict) and "message" in first:
-                        msg = first["message"]
-                        if isinstance(msg, dict) and "tool_calls" in msg:
-                            tool_calls = msg["tool_calls"]
-
-                # Extract token usage
-                usage = parsed.get("usage") or {}
-                input_tokens = usage.get("prompt_tokens", 0)
-                output_tokens = usage.get("completion_tokens", 0)
-
-                print(f"[DEBUG] Extracted content length: {len(content)}, tool_calls: {len(tool_calls)}, tokens: {input_tokens}/{output_tokens}")
-                # Strip special tokens from the returned content so it is safe to store
-                # in message history and re-send in subsequent turns.
-                for token in _RAW_MODEL_TOKENS:
-                    if token in content:
-                        content = content[:content.index(token)].rstrip()
-                # Normalize returned tool calls to standard format so they are safe to store
-                # in message history and re-send in subsequent turns.
-                tool_calls = _normalize_returned_tool_calls(tool_calls)
-                if tool_calls:
-                    print(f"[DEBUG] Tool calls returned: {[tc.get('function', {}).get('name') if isinstance(tc, dict) else tc for tc in tool_calls]}")
-                log_tool_calls(messages_to_send, tool_calls, content, input_tokens, output_tokens, model=model)
-                return content, tool_calls, input_tokens, output_tokens
-
-        except urllib.error.HTTPError as exc:
-            error_data = exc.read().decode("utf-8")
-            error_lower = error_data.lower()
-            is_harmony_error = (
-                exc.code == 500 and (
-                    "harmonyerror" in error_lower
-                    or "unexpected tokens" in error_lower
-                    or "unexpected token" in error_lower
-                    or "expecting start token" in error_lower
-                    or "to=functions." in error_data
-                )
-            )
-            if is_harmony_error and _attempt < (len(_harmony_retry_plan) - 1):
-                next_cfg = _harmony_retry_plan[_attempt + 1]
-                print(
-                    f"[HARMONY-RETRY] Attempt {_attempt + 1} failed with HarmonyError. "
-                    f"Retrying with temperature={next_cfg['temperature']} "
-                    f"reasoning={next_cfg['reasoning']} strict={next_cfg['strict_tool_calling']} ..."
-                )
-                continue  # retry the loop
-
-            print(f"[ERROR] LLM HTTP Error {exc.code}: {exc.reason}")
-            print(f"[ERROR] Response body: {error_data[:500]}")
-            raise RuntimeError(f"LLM request failed: {exc.code} {exc.reason} - {error_data[:200]}")
-
-        except urllib.error.URLError as exc:
-            print(f"[ERROR] LLM URL Error: {exc.reason}")
-            print(f"[ERROR] Make sure EXECUTING_LLM_BASE_URL is set and the vLLM server is running")
-            raise RuntimeError(f"LLM request failed: {exc.reason}")
+    except urllib.error.URLError as exc:
+        print(f"[ERROR] LLM URL Error: {exc.reason}")
+        print(f"[ERROR] Make sure EXECUTING_LLM_BASE_URL is set and the vLLM server is running")
+        raise RuntimeError(f"LLM request failed: {exc.reason}")
 
     return "", [], 0, 0  # unreachable, satisfies type checkers
 

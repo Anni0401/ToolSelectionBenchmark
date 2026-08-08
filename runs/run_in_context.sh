@@ -126,12 +126,18 @@ echo "GPT-OSS ready."
 ####################################################
 # Switch into benchmark project
 ####################################################
-
+deactivate || true
+source "${BENCH_VENV}/bin/activate"
 cd "${PROJECT_ROOT}/wild-tool-bench"
+
 
 ####################################################
 # Start LangGraph
 ####################################################
+
+echo "Cleaning stale LangGraph process..."
+
+fuser -k 8001/tcp 2>/dev/null || true
 
 echo "Starting LangGraph..."
 
@@ -163,7 +169,7 @@ echo "Running benchmark..."
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result/in_context \
+    --result-dir result_120B/in_context \
     --num-threads 1
 
 echo ""

@@ -6,12 +6,80 @@ from tqdm import tqdm
 from wtb.constant import PROJECT_ROOT, PROMPT_PATH, RESULT_PATH, SCORE_PATH
 from wtb.utils import load_file, write_list_of_dicts_to_file, write_dicts_to_file
 from wtb.checker_utils import ToolArgsChecker
+from wtb.tool_call_graph import ToolCallGraph
 
 
-def params_checker(result):
+def _normalize_candidate_actions(answer_actions):
+    normalized = []
+    for action in answer_actions:
+        normalized.append((action["name"], action["arguments"]))
+    return sorted(normalized, key=lambda item: (item[0], item[1]))
+
+
+def _normalize_predicted_actions(predict_tool_calls):
+    normalized = []
+    for tool_call in predict_tool_calls:
+        function = tool_call["function"]
+        normalized.append((function["name"], function["arguments"]))
+    return sorted(normalized, key=lambda item: (item[0], item[1]))
+
+
+def _replay_gold_path(result, answer):
+    tool_call_graph = ToolCallGraph(answer)
+    tool_call_graph.add_node_list()
+    tool_call_graph.generate_all_path()
+
+    inference_log = result["inference_log"]
+    for key in inference_log.keys():
+        if not key.startswith("step_"):
+            continue
+
+        step = int(key.split("_")[-1])
+        step_data = inference_log[key]
+        inference_output = step_data["inference_output"]
+        if inference_output["current_action_name_label"] == "error":
+            return "error"
+
+        inference_answer = step_data.get("inference_answer", {})
+        candidate_answer_function = inference_answer.get("candidate_0_answer_function_list")
+        if candidate_answer_function is None:
+            return "error"
+
+        answer_actions = candidate_answer_function["action"]
+        expected_actions = _normalize_candidate_actions(answer_actions)
+
+        current_step_function_name_list = tool_call_graph.step_to_function_name_list.get(step, [])
+        current_step_function_arguments_list = tool_call_graph.step_to_function_arguments_list.get(step, [])
+        current_step_idx_list = tool_call_graph.step_to_idx_list.get(step, [])
+
+        matched_idx_list = None
+        for idx_list, function_name_list, function_arguments_list in zip(
+            current_step_idx_list,
+            current_step_function_name_list,
+            current_step_function_arguments_list,
+        ):
+            candidate_actions = sorted(
+                zip(function_name_list, [json.dumps(args, ensure_ascii=False) for args in function_arguments_list]),
+                key=lambda item: (item[0], item[1])
+            )
+            if candidate_actions == expected_actions:
+                matched_idx_list = idx_list
+                break
+
+        if matched_idx_list is None:
+            return "error"
+
+        tool_call_graph.update_updating_all_path_list(step, matched_idx_list)
+        tool_call_graph.init_step_to_answer()
+
+    return "correct"
+
+
+def params_checker(result, answer):
     tool_args_checker = ToolArgsChecker()
     action_arguments_label = "correct"
     inference_log = result["inference_log"]
+    action_path_label = _replay_gold_path(result, answer)
     for key in inference_log.keys():
         if not key.startswith("step_"):
             continue
@@ -73,6 +141,11 @@ def params_checker(result):
             step_data["inference_output"]["current_action_arguments_check_result"] = arguments_check_result
 
     action_name_label = result["action_name_label"]
+    if action_path_label == "error":
+        action_name_label = "error"
+        result["action_name_label"] = "error"
+        result["is_optimal"] = False
+
     if action_name_label == "correct":
         items = list(result.items())
         items.insert(1, ("action_arguments_label", action_arguments_label))
@@ -293,8 +366,9 @@ def runner(model_names, result_dir, score_dir):
                 score_results.append({"id": id_, "results": results})
                 continue
 
-            for result in results:
-                action_name_label, action_arguments_label = params_checker(result)
+            for i, result in enumerate(results):
+                answer = all_test_entries[int(id_.rsplit("_", 1)[1])]["answer_list"][i]
+                action_name_label, action_arguments_label = params_checker(result, answer)
                 if action_name_label == "error" or action_arguments_label == "error":
                     label = "error"
                 else:

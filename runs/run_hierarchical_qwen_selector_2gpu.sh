@@ -59,7 +59,7 @@ SELECTOR_MODEL="${SELECTOR_MODEL:-Qwen/Qwen3-30B-A3B}"
 # Unquantized selector model settings.
 SELECTOR_DTYPE="${SELECTOR_DTYPE:-bfloat16}"
 SELECTOR_GPU_MEM_UTIL="${SELECTOR_GPU_MEM_UTIL:-0.90}"
-SELECTOR_MAX_MODEL_LEN="${SELECTOR_MAX_MODEL_LEN:-32768}"
+SELECTOR_MAX_MODEL_LEN="${SELECTOR_MAX_MODEL_LEN:-40960}"
 
 GPT_PORT="${GPT_PORT:-8000}"
 SELECTOR_PORT="${SELECTOR_PORT:-8002}"
@@ -380,7 +380,7 @@ echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result/hierarchical_qwen30b_selector \
+    --result-dir result_120B/hierarchical \
     --num-threads 1
 
 echo ""

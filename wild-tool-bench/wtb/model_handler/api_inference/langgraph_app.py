@@ -1250,15 +1250,21 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
                         else:
                             tools.append(data)
             
-            # Deduplicate tools by name to avoid processing same tool multiple times
-            seen_names = set()
+            # Deduplicate by name + description (first wins on param differences).
+            def dedup_key(tool: dict):
+                func = tool.get("function", {})
+                name = func.get("name", "")
+                desc = " ".join((func.get("description") or "").split()).strip().lower()
+                return (name, desc)
+
+            seen_keys = set()
             unique_tools = []
             duplicates = 0
             for tool in tools:
-                tool_name = tool.get("function", {}).get("name", "unknown")
-                if tool_name not in seen_names:
+                key = dedup_key(tool)
+                if key not in seen_keys:
                     unique_tools.append(tool)
-                    seen_names.add(tool_name)
+                    seen_keys.add(key)
                 else:
                     duplicates += 1
             
@@ -1284,15 +1290,21 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY environment variable must be set")
         
-        # Deduplicate tools by name first
-        seen_names = set()
+        # Deduplicate by name + description (first wins on param differences).
+        def dedup_key(tool: dict):
+            func = tool.get("function", {})
+            name = func.get("name", "")
+            desc = " ".join((func.get("description") or "").split()).strip().lower()
+            return (name, desc)
+
+        seen_keys = set()
         unique_tools = []
         duplicates = 0
         for tool in tools:
-            tool_name = tool.get("function", {}).get("name", "unknown")
-            if tool_name not in seen_names:
+            key = dedup_key(tool)
+            if key not in seen_keys:
                 unique_tools.append(tool)
-                seen_names.add(tool_name)
+                seen_keys.add(key)
             else:
                 duplicates += 1
         

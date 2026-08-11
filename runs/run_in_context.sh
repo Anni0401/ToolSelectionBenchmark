@@ -169,7 +169,7 @@ echo "Running benchmark..."
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result_120B/in_context \
+    --result-dir result_120B_v2/in_context \
     --num-threads 1
 
 echo ""

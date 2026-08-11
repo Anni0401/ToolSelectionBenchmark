@@ -1,5 +1,6 @@
 import os
 import json
+import copy
 import time
 import threading
 import urllib.request
@@ -231,12 +232,159 @@ class InContextToolSelector(ToolSelector):
     """
     
     def __init__(self, schema_cache_file: str = None):
-        self.schema_cache_file = schema_cache_file or os.path.join(
+        self.schema_cache_file = schema_cache_file or os.getenv("LANGGRAPH_TOOL_SCHEMAS_CACHE_FILE") or os.path.join(
             os.path.dirname(__file__),
             "tool_schemas_cache.json"
         )
+        self.tools_en_file = os.getenv("LANGGRAPH_TOOLS_EN_FILE") or os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../multi-agent-framework/tools/tools_en.jsonl",
+            )
+        )
         self.tools_cache = None
+        self.task_tools_by_index = []
+        self.task_tools_by_benchmark_id = {}
         self._load_schema_cache()
+        self._load_task_tools_reference()
+
+    @staticmethod
+    def _normalize_required(required: Any) -> list:
+        if isinstance(required, list):
+            return [str(item) for item in required]
+        return []
+
+    @staticmethod
+    def _tool_signature(tool: dict) -> tuple:
+        func = tool.get("function", {}) if isinstance(tool, dict) else {}
+        params = func.get("parameters", {}) if isinstance(func, dict) else {}
+        props = params.get("properties", {}) if isinstance(params, dict) else {}
+        param_names = tuple(sorted(props.keys())) if isinstance(props, dict) else tuple()
+        return (func.get("name"), param_names)
+
+    @staticmethod
+    def _extract_tools_from_jsonl_entry(entry: Any) -> list:
+        if isinstance(entry, list):
+            return entry
+        if isinstance(entry, dict):
+            for key in ("tools", "tool_schemas", "available_tools"):
+                value = entry.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
+
+    @staticmethod
+    def _to_int_or_none(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _load_task_tools_reference(self):
+        """Load per-task tools from tools_en.jsonl to recover task-specific required fields."""
+        if not os.path.exists(self.tools_en_file):
+            print(f"[WARNING] tools_en reference file not found: {self.tools_en_file}")
+            return
+
+        try:
+            with open(self.tools_en_file, "r", encoding="utf-8") as f:
+                for _, line in enumerate(f):
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    try:
+                        entry = json.loads(line)
+                    except Exception:
+                        continue
+
+                    entry_tools = self._extract_tools_from_jsonl_entry(entry)
+                    self.task_tools_by_index.append(entry_tools)
+
+                    if isinstance(entry, dict):
+                        benchmark_task_id = entry.get("benchmark_task_id")
+                        if benchmark_task_id is None:
+                            benchmark_task_id = entry.get("benchmark_task")
+                        benchmark_task_id = self._to_int_or_none(benchmark_task_id)
+                        if benchmark_task_id is not None:
+                            self.task_tools_by_benchmark_id[benchmark_task_id] = entry_tools
+
+            print(
+                f"[IN-CONTEXT SELECTOR] Loaded task-tool reference rows: {len(self.task_tools_by_index)} "
+                f"from {os.path.basename(self.tools_en_file)}"
+            )
+        except Exception as e:
+            print(f"[WARNING] Failed to load tools_en reference file: {e}")
+
+    def _get_task_tools_for_request(self, request_tools: list) -> tuple[list, Optional[int], Optional[int], int]:
+        """Resolve task tools by benchmark_task_id/task_idx with robust index fallback."""
+        benchmark_task_id = self._to_int_or_none(getattr(_request_context, "benchmark_task_id", None))
+        task_idx = self._to_int_or_none(getattr(_request_context, "task_idx", None))
+
+        if benchmark_task_id is not None and benchmark_task_id in self.task_tools_by_benchmark_id:
+            return self.task_tools_by_benchmark_id[benchmark_task_id], benchmark_task_id, None, 0
+
+        if task_idx is None or not self.task_tools_by_index:
+            return [], benchmark_task_id, task_idx, 0
+
+        candidate_indices = []
+        if 0 <= task_idx < len(self.task_tools_by_index):
+            candidate_indices.append(task_idx)
+        if task_idx > 0 and 0 <= task_idx - 1 < len(self.task_tools_by_index):
+            candidate_indices.append(task_idx - 1)
+
+        if not candidate_indices:
+            return [], benchmark_task_id, task_idx, 0
+
+        # If task_idx indexing convention is unclear, choose the candidate line
+        # that best matches the incoming request tools.
+        request_signatures = {self._tool_signature(t) for t in (request_tools or [])}
+        best_idx = candidate_indices[0]
+        best_score = -1
+        for idx in candidate_indices:
+            candidate_signatures = {self._tool_signature(t) for t in self.task_tools_by_index[idx]}
+            score = len(candidate_signatures.intersection(request_signatures)) if request_signatures else 0
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        return self.task_tools_by_index[best_idx], benchmark_task_id, task_idx, best_score
+
+    def _apply_required_overrides_for_task(self, all_tools: list, task_tools: list) -> tuple[list, int]:
+        """Override required fields for tools matching by name + parameter names."""
+        if not all_tools or not task_tools:
+            return all_tools, 0
+
+        task_required_by_signature = {}
+        for task_tool in task_tools:
+            signature = self._tool_signature(task_tool)
+            if not signature[0]:
+                continue
+            params = task_tool.get("function", {}).get("parameters", {})
+            task_required_by_signature[signature] = self._normalize_required(params.get("required"))
+
+        if not task_required_by_signature:
+            return all_tools, 0
+
+        adjusted_tools = []
+        overrides_count = 0
+
+        for tool in all_tools:
+            signature = self._tool_signature(tool)
+            if signature in task_required_by_signature:
+                required = task_required_by_signature[signature]
+                tool_copy = copy.deepcopy(tool)
+                tool_copy.setdefault("function", {})
+                tool_copy["function"].setdefault("parameters", {})
+                tool_copy["function"]["parameters"]["required"] = required
+                adjusted_tools.append(tool_copy)
+                overrides_count += 1
+            else:
+                adjusted_tools.append(tool)
+
+        return adjusted_tools, overrides_count
     
     def _load_schema_cache(self):
         """Load all valid tools from schema cache file."""
@@ -261,6 +409,8 @@ class InContextToolSelector(ToolSelector):
         """Return all valid tools from schema cache for in-context selection."""
         # Use schema cache tools instead of request tools
         all_tools = self.tools_cache if self.tools_cache else tools
+        task_tools, benchmark_task_id, task_idx, match_score = self._get_task_tools_for_request(tools)
+        selected_tools, overrides_count = self._apply_required_overrides_for_task(all_tools, task_tools)
         
         # Extract query for logging
         query = ""
@@ -273,25 +423,36 @@ class InContextToolSelector(ToolSelector):
         log_tool_selection(
             strategy_name="in_context",
             query=query,
-            available_tools_count=len(all_tools),
-            selected_tools=all_tools,
-            selection_metadata={"method": "pass_through"}
+            available_tools_count=len(selected_tools),
+            selected_tools=selected_tools,
+            selection_metadata={
+                "method": "pass_through_with_required_override",
+                "required_overrides": overrides_count,
+                "benchmark_task_id": benchmark_task_id,
+                "task_idx": task_idx,
+                "task_row_match_score": match_score,
+            }
         )
         
         print(f"\n[IN-CONTEXT SELECTOR]")
-        print(f"  Total available tools: {len(all_tools)}")
-        print(f"  Passing all {len(all_tools)} tools to LLM for in-context selection")
-        if len(all_tools) <= 5:
-            for tool in all_tools:
+        print(f"  Total available tools: {len(selected_tools)}")
+        print(f"  Required overrides applied: {overrides_count}")
+        if benchmark_task_id is not None:
+            print(f"  benchmark_task_id: {benchmark_task_id}")
+        if task_idx is not None:
+            print(f"  task_idx: {task_idx} (row match score: {match_score})")
+        print(f"  Passing all {len(selected_tools)} tools to LLM for in-context selection")
+        if len(selected_tools) <= 5:
+            for tool in selected_tools:
                 tool_name = tool.get("function", {}).get("name", "unknown")
                 print(f"    - {tool_name}")
         else:
-            for tool in all_tools[:5]:
+            for tool in selected_tools[:5]:
                 tool_name = tool.get("function", {}).get("name", "unknown")
                 print(f"    - {tool_name}")
-            print(f"    ... and {len(all_tools) - 5} more")
+            print(f"    ... and {len(selected_tools) - 5} more")
         print()
-        return all_tools
+        return selected_tools
 
 
 class HierarchicalToolSelector(ToolSelector):
@@ -2820,6 +2981,7 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
         # produced each log entry without threading params through every layer.
         _request_context.test_entry_id = payload.get("test_entry_id") or inp.get("test_entry_id")
         _request_context.task_idx = payload.get("task_idx") if payload.get("task_idx") is not None else inp.get("task_idx")
+        _request_context.benchmark_task_id = payload.get("benchmark_task_id") or inp.get("benchmark_task_id")
         _request_context.selection_mode = selection_mode
         _request_context.request_id = uuid.uuid4().hex
         

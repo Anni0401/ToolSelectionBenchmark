@@ -249,6 +249,68 @@ class InContextToolSelector(ToolSelector):
         self._load_task_tools_reference()
 
     @staticmethod
+    def _normalize_description(value: Any) -> str:
+        return " ".join(str(value or "").split()).strip().lower()
+
+    def _sanitize_and_dedup_tools(self, tools: list) -> tuple[list, dict]:
+        """Keep only OpenAI tool schema fields and deduplicate by name+description."""
+        private_fields = {"_synthetic", "_source_tool", "sourceTool", "source_tool", "synthetic"}
+        seen_keys = set()
+        sanitized = []
+
+        dropped_invalid = 0
+        dropped_duplicate = 0
+        removed_private_field_count = 0
+
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                dropped_invalid += 1
+                continue
+
+            for key in private_fields:
+                if key in tool:
+                    removed_private_field_count += 1
+
+            func = tool.get("function")
+            if not isinstance(func, dict):
+                dropped_invalid += 1
+                continue
+
+            name = str(func.get("name", "")).strip()
+            desc = str(func.get("description", "")).strip()
+            params = func.get("parameters")
+
+            if not name or not desc or not isinstance(params, dict):
+                dropped_invalid += 1
+                continue
+
+            key = (name, self._normalize_description(desc))
+            if key in seen_keys:
+                dropped_duplicate += 1
+                continue
+            seen_keys.add(key)
+
+            sanitized.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": desc,
+                        "parameters": params,
+                    },
+                }
+            )
+
+        stats = {
+            "input_tools": len(tools or []),
+            "kept_tools": len(sanitized),
+            "dropped_invalid": dropped_invalid,
+            "dropped_duplicate": dropped_duplicate,
+            "removed_private_field_count": removed_private_field_count,
+        }
+        return sanitized, stats
+
+    @staticmethod
     def _normalize_required(required: Any) -> list:
         if isinstance(required, list):
             return [str(item) for item in required]
@@ -390,14 +452,21 @@ class InContextToolSelector(ToolSelector):
         """Load all valid tools from schema cache file."""
         if os.path.exists(self.schema_cache_file):
             try:
-                with open(self.schema_cache_file, 'r') as f:
+                with open(self.schema_cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if isinstance(data, dict) and "tools" in data:
-                        self.tools_cache = data["tools"]
-                        print(f"[IN-CONTEXT SELECTOR] Loaded {len(self.tools_cache)} valid tools from schema cache")
+                        loaded_tools = data["tools"]
                     else:
-                        self.tools_cache = data if isinstance(data, list) else []
-                        print(f"[IN-CONTEXT SELECTOR] Loaded {len(self.tools_cache)} tools from schema cache")
+                        loaded_tools = data if isinstance(data, list) else []
+
+                    self.tools_cache, stats = self._sanitize_and_dedup_tools(loaded_tools)
+                    print(
+                        "[IN-CONTEXT SELECTOR] Loaded tools from schema cache: "
+                        f"input={stats['input_tools']}, kept={stats['kept_tools']}, "
+                        f"dropped_invalid={stats['dropped_invalid']}, "
+                        f"dropped_duplicate={stats['dropped_duplicate']}, "
+                        f"removed_private_fields={stats['removed_private_field_count']}"
+                    )
             except Exception as e:
                 print(f"[WARNING] Failed to load schema cache: {e}")
                 self.tools_cache = []
@@ -471,6 +540,13 @@ class HierarchicalToolSelector(ToolSelector):
         self.prompt_headroom_tokens = int(os.getenv("LANGGRAPH_SELECTOR_PROMPT_HEADROOM_TOKENS", "1024"))
         self.max_conversation_chars = int(os.getenv("LANGGRAPH_SELECTOR_MAX_CONVERSATION_CHARS", "6000"))
         self.max_tool_desc_chars = int(os.getenv("LANGGRAPH_SELECTOR_MAX_TOOL_DESC_CHARS", "180"))
+        # Controls what conversation context is included in selector prompt:
+        # - latest_user: only latest user message (default)
+        # - full: bounded full history
+        # - none: no conversation context
+        self.selector_context_mode = (
+            os.getenv("LANGGRAPH_SELECTOR_CONTEXT_MODE", "latest_user") or "latest_user"
+        ).strip().lower()
         self.last_selection_metrics = {}
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
@@ -565,6 +641,30 @@ class HierarchicalToolSelector(ToolSelector):
             lines.append(f"{idx}. {role}: {content}")
         return "\n".join(lines)
 
+    def _latest_user_message(self, messages: list) -> str:
+        """Return latest user message for compact selector context."""
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = json.dumps(content, ensure_ascii=False)
+            elif not isinstance(content, str):
+                content = str(content)
+            content = content.strip()
+            if content:
+                return f"1. user: {content}"
+        return "(no user message)"
+
+    def _selector_context_text(self, messages: list, char_budget: int) -> str:
+        """Build selector context according to configured context mode."""
+        mode = self.selector_context_mode
+        if mode == "none":
+            return "(no conversation context)"
+        if mode == "latest_user":
+            return self._latest_user_message(messages)
+        return self._serialize_messages_for_selector(messages, char_budget)
+
     def _build_selector_prompt(self, messages: list, tools: list) -> tuple[str, int]:
         """Build selector prompt while keeping full tool list and trimming only history."""
         base_conversation_budget = self.max_conversation_chars
@@ -587,12 +687,12 @@ class HierarchicalToolSelector(ToolSelector):
 
         # Keep the full tool list and full descriptions. Only reduce conversation history.
         attempted_budget = base_conversation_budget
-        conversation_history = self._serialize_messages_for_selector(messages, attempted_budget)
+        conversation_history = self._selector_context_text(messages, attempted_budget)
         final_prompt = (prompt_header.format(conversation_history=conversation_history) + tool_text + prompt_footer)
         est_tokens = self._estimate_tokens(final_prompt)
-        while est_tokens > token_budget and attempted_budget > 0:
+        while est_tokens > token_budget and attempted_budget > 0 and self.selector_context_mode == "full":
             attempted_budget = max(0, attempted_budget // 2)
-            conversation_history = self._serialize_messages_for_selector(messages, attempted_budget)
+            conversation_history = self._selector_context_text(messages, attempted_budget)
             final_prompt = (prompt_header.format(conversation_history=conversation_history) + tool_text + prompt_footer)
             est_tokens = self._estimate_tokens(final_prompt)
 
@@ -600,7 +700,7 @@ class HierarchicalToolSelector(ToolSelector):
         print(
             f"[HIERARCHICAL SELECTOR] prompt_est_tokens={est_tokens}, "
             f"budget={token_budget}, tools_in_prompt={tools_in_prompt}/{tools_in_prompt}, "
-            f"conversation_chars_budget={attempted_budget}"
+            f"conversation_chars_budget={attempted_budget}, context_mode={self.selector_context_mode}"
         )
         return final_prompt, attempted_budget
 

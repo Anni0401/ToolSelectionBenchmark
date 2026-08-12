@@ -111,7 +111,7 @@ def main():
     print(f"{'─'*62}")
 
     # ── Remove 400 random synthetic tools ───────────────────────────────────
-    remove_count = 400
+    remove_count = 200
     if len(synthetic_tools) < remove_count:
         raise ValueError(
             f"Cannot remove {remove_count} synthetic tools – "

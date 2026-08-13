@@ -176,7 +176,7 @@ echo "Running benchmark..."
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result/embedding_context \
+    --result-dir result_120B_v2/embedding_context \
     --num-threads 1
 
 echo ""

@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
 """
-Generate synthetic similar tools using HuggingFace Inference API.
+Generate exactly two synthetic tools for every unique normalized tool ID.
 
-Ensures each tool has at least 10 similar tools (>0.75 similarity).
-Synthetic tools are created to fill gaps but are marked as invalid solutions.
+Input expectations
+------------------
+The --tools JSONL file is the annotated original tool set where every tool has
+an integer ``normalized_tool_id``.  The file may contain the same normalized ID
+multiple times.  For each ID this script:
+
+1. keeps the FIRST occurrence as the representative definition;
+2. keeps the complete tool row containing that first occurrence as context;
+3. finds the best matching benchmark record and passes along its task(s);
+4. passes along all other tools from the representative's first-occurrence row;
+5. asks the LLM for exactly TWO synthetic tools.
+
+No nearest-neighbor CSV is used.
 """
 
 import argparse
-import csv
+import copy
 import json
 import os
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    # Try loading from multiple locations
+
     env_paths = [
         Path.cwd() / ".env",
         Path.cwd() / "wild-tool-bench" / ".env",
@@ -31,156 +41,412 @@ except ImportError:
     pass
 
 try:
-    from groq import Groq
+    from openai import OpenAI
 except ImportError:
-    print("Error: groq not installed. Install with: pip install groq", file=sys.stderr)
+    print("Error: openai not installed. Install with: pip install openai", file=sys.stderr)
     sys.exit(1)
 
 
-def test_huggingface_api(api_token, model="llama-3.3-70b-versatile"):
-    """Test if Groq API is working"""
-    print(f"Testing Groq API with model: {model}")
-    test_prompt = "What is 2+2?"
-    response = call_huggingface_api(test_prompt, api_token, model=model, max_tokens=50)
+SYNTHETIC_TOOLS_PER_ID = 2
+
+SAIA_DEFAULT_BASE_URL = "https://chat-ai.academiccloud.de/v1"
+SAIA_DEFAULT_MODEL = "openai-gpt-oss-120b"
+
+
+def test_api(api_token, base_url, model=SAIA_DEFAULT_MODEL):
+    """Test whether the SAIA API is reachable."""
+    print(f"Testing SAIA API at {base_url} with model: {model}")
+    response = call_generation_api("What is 2+2?", api_token, base_url, model=model, max_tokens=50)
     if response:
         print(f"✓ API test passed. Response: {response[:100]}")
         return True
-    else:
-        print("✗ API test failed")
-        return False
-    if response:
-        print(f"✓ API test passed. Response: {response[:100]}")
-        return True
-    else:
-        print("✗ API test failed")
-        return False
+    print("✗ API test failed")
+    return False
 
 
-def load_tools(path):
-    """Load tools from tools_en.jsonl"""
-    tools = {}
-    with open(path, 'r', encoding='utf-8') as f:
-        for line in f:
+def _extract_tools_from_jsonl_entry(entry):
+    """Return the tool list from a JSONL entry."""
+    if isinstance(entry, list):
+        return entry
+    if isinstance(entry, dict):
+        for key in ("tools", "english_tools", "tool_schemas", "available_tools"):
+            value = entry.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _tool_name(tool):
+    if not isinstance(tool, dict):
+        return str(tool) if tool is not None else None
+    func = tool.get("function")
+    if isinstance(func, dict):
+        return func.get("name")
+    return tool.get("name")
+
+
+
+def load_normalized_tool_contexts(path):
+    """
+    Load the normalized-ID tool set and aggregate ALL source rows for each ID.
+
+    For each normalized_tool_id:
+      - representative = FIRST occurrence of that ID in file order
+      - source_row_indices = every JSONL row in which that ID occurs
+      - cooccurring_tools = union of all other tools appearing in ANY of those rows
+
+    Row indices are 0-based internally; row numbers shown to users are +1.
+    """
+    contexts = {}
+    record_count = 0
+    tool_occurrence_count = 0
+    source_rows = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for row_index, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
-            item = json.loads(line)
-            if isinstance(item, list):
-                for tool in item:
-                    name = tool.get('function', {}).get('name')
-                    if name:
-                        tools[name] = tool
-            else:
-                name = item.get('function', {}).get('name')
-                if name:
-                    tools[name] = item
-    return tools
 
+            record_count += 1
+            entry = json.loads(line)
+            row_tools = [
+                t for t in _extract_tools_from_jsonl_entry(entry)
+                if isinstance(t, dict)
+            ]
+            source_rows.append(copy.deepcopy(row_tools))
+            tool_occurrence_count += len(row_tools)
 
-def load_neighbors(path, similarity_threshold=0.75):
-    """Load neighbors from tools_en_tool_neighbors.csv"""
-    neighbors = defaultdict(list)
-    with open(path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            sim = float(row['similarity'])
-            if sim >= similarity_threshold:
-                tool = row['tool_name']
-                neighbor = row['neighbor_name']
-                rank = int(row['rank'])
-                neighbors[tool].append({
-                    'name': neighbor,
-                    'similarity': sim,
-                    'rank': rank
-                })
-    return neighbors
+            ids_seen_in_row = set()
 
+            for position, tool in enumerate(row_tools):
+                normalized_id = tool.get("normalized_tool_id")
+                if normalized_id is None:
+                    raise ValueError(
+                        f"Missing normalized_tool_id at JSONL row {row_index + 1}, "
+                        f"tool position {position + 1}: {_tool_name(tool)!r}"
+                    )
 
-def load_benchmark_tasks(path, tool_names):
-    """Load benchmark tasks and map to tools"""
-    task_map = defaultdict(list)
-    with open(path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            item = json.loads(line)
-            tasks = item.get('english_tasks', item.get('tasks', []))
-            tools = item.get('english_tools', item.get('tools', []))
-            
-            tool_names_in_record = []
-            for tool in tools:
-                if isinstance(tool, dict):
-                    name = tool.get('function', {}).get('name') or tool.get('name')
+                try:
+                    normalized_id = int(normalized_id)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid normalized_tool_id {normalized_id!r} "
+                        f"at row {row_index + 1}"
+                    ) from exc
+
+                if normalized_id not in contexts:
+                    representative = copy.deepcopy(tool)
+                    contexts[normalized_id] = {
+                        "normalized_tool_id": normalized_id,
+                        "representative": representative,
+                        "representative_name": _tool_name(representative),
+                        "first_row_index": row_index,
+                        "first_row_number": row_index + 1,
+                        "first_position": position,
+                        "source_row_indices": [],
+                        "cooccurring_tools": [],
+                    }
+
+                # Only record a row once even if the same logical tool occurs
+                # multiple times inside that row.
+                if normalized_id not in ids_seen_in_row:
+                    contexts[normalized_id]["source_row_indices"].append(row_index)
+                    ids_seen_in_row.add(normalized_id)
+
+    # Aggregate all co-occurring tools across every row for each normalized ID.
+    for normalized_id, context in contexts.items():
+        context_seen = set()
+        cooccurring_tools = []
+
+        for row_index in context["source_row_indices"]:
+            for other in source_rows[row_index]:
+                other_id = other.get("normalized_tool_id")
+
+                # Exclude the source logical tool itself, including duplicate
+                # occurrences/variants that share its normalized ID.
+                if other_id is not None and int(other_id) == normalized_id:
+                    continue
+
+                # Prefer normalized ID for deduplication of context tools.
+                if other_id is not None:
+                    key = ("normalized_id", int(other_id))
                 else:
-                    name = tool
-                if name and name in tool_names:
-                    tool_names_in_record.append(name)
-            
-            for task in tasks:
-                task_text = task if isinstance(task, str) else task.get('input', str(task))
-                for tool_name in tool_names_in_record:
-                    task_map[tool_name].append(task_text)
-    return task_map
+                    func = other.get("function", {})
+                    key = (
+                        "schema",
+                        func.get("name"),
+                        func.get("description"),
+                        json.dumps(
+                            func.get("parameters", {}),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    )
+
+                if key in context_seen:
+                    continue
+
+                context_seen.add(key)
+                cooccurring_tools.append(copy.deepcopy(other))
+
+        context["cooccurring_tools"] = cooccurring_tools
+        context["occurrence_count"] = len(context["source_row_indices"])
+
+    print(
+        f"  Loaded {tool_occurrence_count} tool occurrences across "
+        f"{record_count} JSONL records"
+    )
+    print(f"  Found {len(contexts)} unique normalized_tool_id values")
+    return contexts
+
+
+def _extract_tasks(entry):
+    """Extract task texts from one WildToolBench JSONL record."""
+    if not isinstance(entry, dict):
+        return []
+
+    tasks = entry.get("english_tasks")
+    if tasks is None:
+        tasks = entry.get("tasks", [])
+
+    if not isinstance(tasks, list):
+        tasks = [tasks]
+
+    result = []
+    for task in tasks:
+        if isinstance(task, str):
+            text = task
+        elif isinstance(task, dict):
+            text = task.get("input") or task.get("query") or task.get("task")
+            if text is None:
+                text = json.dumps(task, ensure_ascii=False)
+        else:
+            text = str(task)
+
+        text = str(text).strip()
+        if text:
+            result.append(text)
+
+    return result
+
+
+def load_benchmark_records(path):
+    """
+    Load benchmark records in file order.
+
+    IMPORTANT: source JSONL row i is assumed to correspond directly to
+    benchmark JSONL row i.
+    """
+    records = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for row_index, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+
+            entry = json.loads(line)
+            records.append(
+                {
+                    "row_index": row_index,
+                    "tasks": _extract_tasks(entry),
+                }
+            )
+
+    return records
+
+
+def attach_benchmark_tasks(contexts, benchmark_records):
+    """
+    Attach ALL benchmark tasks from ALL source rows containing each ID.
+
+    Example:
+      normalized ID 1 occurs in source rows 1 and 20
+      -> attach tasks from benchmark rows 1 and 20
+      -> cooccurring_tools already contains the union of tools from source
+         rows 1 and 20
+
+    No name-based matching is used.
+    """
+    if not contexts:
+        return
+
+    max_source_row = max(
+        row_index
+        for context in contexts.values()
+        for row_index in context["source_row_indices"]
+    )
+
+    if max_source_row >= len(benchmark_records):
+        raise ValueError(
+            "Benchmark/source row mismatch: source references row "
+            f"{max_source_row + 1}, but benchmark only has "
+            f"{len(benchmark_records)} records."
+        )
+
+    for context in contexts.values():
+        tasks = []
+        seen_tasks = set()
+
+        for row_index in context["source_row_indices"]:
+            record = benchmark_records[row_index]
+
+            for task in record["tasks"]:
+                if task in seen_tasks:
+                    continue
+                seen_tasks.add(task)
+                tasks.append(task)
+
+        context["tasks"] = tasks
+        context["benchmark_row_indices"] = list(
+            context["source_row_indices"]
+        )
 
 
 def extract_tool_description(tool):
-    """Extract tool description"""
-    func = tool.get('function', {})
-    return func.get('description', 'No description available')
+    func = tool.get("function", {}) if isinstance(tool, dict) else {}
+    return func.get("description", "No description available")
 
 
-def call_huggingface_api(prompt, api_token, model="llama-3.3-70b-versatile", max_tokens=2048):
-    """Call Groq API for text generation"""
+def summarize_tool_for_prompt(tool):
+    """Compact representation of a co-occurring tool for the generation prompt."""
+    if not isinstance(tool, dict):
+        return str(tool)
+
+    func = tool.get("function", {})
+    params = func.get("parameters", {}) if isinstance(func, dict) else {}
+    props = params.get("properties", {}) if isinstance(params, dict) else {}
+    required = params.get("required", []) if isinstance(params, dict) else []
+
+    return {
+        "normalized_tool_id": tool.get("normalized_tool_id"),
+        "name": func.get("name"),
+        "description": func.get("description", ""),
+        "parameters": list(props.keys()) if isinstance(props, dict) else [],
+        "required": required if isinstance(required, list) else [],
+    }
+
+
+def call_generation_api(prompt, api_token, base_url, model=SAIA_DEFAULT_MODEL, max_tokens=2048):
+    """Call the SAIA (Academic Cloud) OpenAI-compatible API for text generation."""
     try:
-        client = Groq(api_key=api_token)
-        
+        client = OpenAI(api_key=api_token, base_url=base_url)
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a helpful tool generation expert. Generate valid JSON responses."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": "You are a helpful tool generation expert. Generate valid JSON responses.",
+                },
+                {"role": "user", "content": prompt},
             ],
             max_tokens=max_tokens,
             temperature=0.7,
         )
-        
-        # Extract text from response
-        if response.choices and len(response.choices) > 0:
+
+        if response.choices:
             return response.choices[0].message.content
-        
         return None
     except Exception as e:
-        print(f"Error calling Groq API with model {model}: {type(e).__name__}: {e}", file=sys.stderr)
+        print(
+            f"Error calling SAIA API with model {model}: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
         return None
 
 
-def generate_synthetic_tools_for_tool(tool_name, tool_def, neighbors, tasks, api_token, model, num_to_generate=5):
-    """Generate synthetic similar tools for a given tool using LLM"""
+def _parse_generated_tools(response):
+    """
+    Parse either one-JSON-object-per-line output or a JSON array/object.
+    """
+    if not response:
+        return []
+
+    text = response.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    parsed_tools = []
+
+    # First try the whole response as JSON.
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list):
+            parsed_tools.extend(obj)
+        elif isinstance(obj, dict):
+            parsed_tools.append(obj)
+    except json.JSONDecodeError:
+        # Fall back to one complete JSON object per line.
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("```"):
+                continue
+            try:
+                parsed_tools.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    valid = []
+    for tool in parsed_tools:
+        if not isinstance(tool, dict):
+            continue
+        func = tool.get("function")
+        if not isinstance(func, dict) or not func.get("name"):
+            continue
+        tool.setdefault("type", "function")
+        tool.pop("reason", None)
+        valid.append(tool)
+
+    return valid
+
+
+def generate_synthetic_tools_for_id(context, api_token, base_url, model):
+    """Generate exactly two synthetic tools for one normalized tool ID."""
+    normalized_id = context["normalized_tool_id"]
+    tool_def = context["representative"]
+    tool_name = context["representative_name"]
     description = extract_tool_description(tool_def)
-    neighbor_names = [n['name'] for n in neighbors[:5]]
-    sample_tasks = tasks[:3] if tasks else []
-    
-    # Extract parameter structure from original tool for reference
-    original_params = tool_def.get('function', {}).get('parameters', {})
-    original_param_keys = list(original_params.get('properties', {}).keys())[:3]  # Show first 3 params
-    
-    prompt = f"""You are a tool generation expert. Generate {num_to_generate} synthetic tool definitions that:
+    tasks = context.get("tasks", [])
+    cooccurring_tools = context.get("cooccurring_tools", [])
 
-1. Are RELATED to "{tool_name}" in the same domain/category
-2. BUT have NOTICEABLY DIFFERENT purposes/functionality from each other and from the original
-3. Are NOT valid solutions for the benchmark tasks below
+    original_params = tool_def.get("function", {}).get("parameters", {})
+    properties = original_params.get("properties", {}) if isinstance(original_params, dict) else {}
+    original_param_keys = list(properties.keys()) if isinstance(properties, dict) else []
+    original_required = original_params.get("required", []) if isinstance(original_params, dict) else []
 
-Benchmark tasks that should NOT be solvable by these tools:
-{chr(10).join(f'   - {t[:100]}...' if len(t) > 100 else f'   - {t}' for t in sample_tasks)}
+    task_block = "\n".join(f"   - {task}" for task in tasks) or "   - No benchmark task text found"
 
-Original tool specification:
+    co_tools_summary = [summarize_tool_for_prompt(t) for t in cooccurring_tools]
+    co_tools_block = json.dumps(co_tools_summary, ensure_ascii=False, indent=2)
+
+    prompt = f"""You are a tool generation expert. Generate EXACTLY {SYNTHETIC_TOOLS_PER_ID} synthetic tool definitions.
+
+The source tool represents normalized tool ID {normalized_id}. The tool definition shown is its first occurrence, but the task/context information below is aggregated across EVERY source row in which this normalized ID occurs.
+
+The synthetic tools must:
+1. Be RELATED to the source tool in the same broad domain/category.
+2. Have NOTICEABLY DIFFERENT purposes/functionality from the source tool and from each other.
+3. NOT be valid solutions for ANY of the benchmark tasks shown below.
+4. Also avoid duplicating the functionality of the other real tools that co-occur with the source tool in those tasks.
+
+Benchmark tasks associated with this source context:
+{task_block}
+
+Source tool specification:
+- normalized_tool_id: {normalized_id}
 - Name: {tool_name}
 - Description: {description}
 - Parameters: {original_param_keys}
+- Required parameters: {original_required}
 
-Related existing tools (for domain reference only, NOT to copy):
-{chr(10).join(f'  - {n}' for n in neighbor_names)}
+All unique real tools that co-occur with this source tool across ANY source row in which this normalized ID occurs:
+{co_tools_block}
 
 IMPORTANT: Generate tools in EXACT JSON format matching tools_en.jsonl structure:
 
@@ -207,230 +473,225 @@ IMPORTANT: Generate tools in EXACT JSON format matching tools_en.jsonl structure
 }}
 
 Key Requirements:
-- DIVERSITY: Make each synthetic tool distinctly different from the others (not just clones)
-- DOMAIN: All tools should be in the same domain/category as "{tool_name}" but solve different sub-problems
-- PARAMETERS: Each tool should have meaningfully different parameters (not just renamed copies)
-- DESCRIPTION: Write natural descriptions of what each tool DOES (don't mention tasks or what it doesn't do)
-- NOT A SOLUTION: Design tools that won't solve the benchmark tasks, but don't say that in the description
-- Tool names should be realistic and follow camelCase convention
-- Output ONLY valid JSON (no explanations, no markdown)
-- One complete tool definition per line
+- EXACT COUNT: Return exactly {SYNTHETIC_TOOLS_PER_ID} tool definitions.
+- DIVERSITY: The two synthetic tools must solve different sub-problems from each other.
+- DOMAIN: Stay in the same broad domain/category as "{tool_name}".
+- NON-DUPLICATION: Do not duplicate the source tool or any co-occurring real tool listed above.
+- PARAMETERS: Use parameters appropriate to the new functionality, not merely renamed copies of the source parameters.
+- DESCRIPTION: Describe naturally what each synthetic tool DOES; never mention benchmark tasks or that the tool is synthetic/invalid.
+- NOT A SOLUTION: Neither generated tool may solve any benchmark task listed above.
+- Tool names should be realistic and follow camelCase convention.
+- Output ONLY valid JSON, with one complete tool definition per line.
+- Do not wrap the response in markdown fences and do not add explanations."""
 
-Example of what makes tools distinct in the same domain:
-If original is 'getUserProfile', synthetic tools could be:
-- 'fetchUserSettings' (different scope: settings vs profile)
-- 'getUserMetrics' (different data: metrics vs profile)
-- 'getUserPermissions' (different focus: permissions vs profile)
-NOT just renamed copies like 'getUserProfileData' or 'getProfile'"""
+    response = call_generation_api(prompt, api_token, base_url, model=model, max_tokens=3072)
+    synthetic_tools = _parse_generated_tools(response)
 
-    response = call_huggingface_api(prompt, api_token, model=model, max_tokens=2048)
-    if not response:
-        return []
-    
-    synthetic_tools = []
-    for line in response.split('\n'):
-        line = line.strip()
-        if not line or line.startswith('#') or line.startswith('```'):
-            continue
-        try:
-            tool_json = json.loads(line)
-            # Validate it has required structure: function.name and type
-            if 'function' in tool_json and tool_json['function'].get('name'):
-                if 'type' not in tool_json:
-                    tool_json['type'] = 'function'
-                # Remove helper fields like 'reason' that shouldn't be in final output
-                if 'reason' in tool_json:
-                    del tool_json['reason']
-                synthetic_tools.append(tool_json)
-        except json.JSONDecodeError as e:
-            # Silently skip non-JSON lines (might be explanatory text)
-            continue
-    
+    # The request is exactly two.  Never silently keep extras.
+    if len(synthetic_tools) > SYNTHETIC_TOOLS_PER_ID:
+        synthetic_tools = synthetic_tools[:SYNTHETIC_TOOLS_PER_ID]
+
+    if len(synthetic_tools) != SYNTHETIC_TOOLS_PER_ID:
+        print(
+            f"  WARNING: expected {SYNTHETIC_TOOLS_PER_ID} tools but parsed "
+            f"{len(synthetic_tools)} for normalized_tool_id={normalized_id}",
+            file=sys.stderr,
+        )
+
     return synthetic_tools
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate synthetic similar tools to ensure benchmark difficulty"
+        description=(
+            "Generate exactly two synthetic tools for each unique normalized_tool_id "
+            "using its first occurrence as representative plus ALL matching source rows, benchmark tasks, and co-occurring tools."
+        )
     )
     parser.add_argument(
         "--tools",
-        default="multi-agent-framework/tools/tools_en.jsonl",
-        help="Path to tools_en.jsonl"
-    )
-    parser.add_argument(
-        "--neighbors",
-        default="analysis_embeddings/tools_en_tool_neighbors.csv",
-        help="Path to tools_en_tool_neighbors.csv"
+        default="multi-agent-framework/tools/tools_en_with_normalized_tool_ids.jsonl",
+        help="Annotated tools JSONL containing normalized_tool_id on every tool",
     )
     parser.add_argument(
         "--benchmark",
         default="wild-tool-bench/data/Wild-Tool-Bench.jsonl",
-        help="Path to Wild-Tool-Bench.jsonl"
+        help="Path to Wild-Tool-Bench.jsonl",
     )
     parser.add_argument(
-        "--similarity-threshold",
-        type=float,
-        default=0.75,
-        help="Similarity threshold for considering tools as 'similar'"
+        "--api-key",
+        help="SAIA API key (or set SAIA_API_KEY / EXECUTING_LLM_API_KEY env var)",
     )
     parser.add_argument(
-        "--min-similar-tools",
-        type=int,
-        default=5,
-        help="Minimum number of similar tools to ensure"
-    )
-    parser.add_argument(
-        "--hf-token",
-        help="Groq API token (or set GROQ_API_KEY env var)"
+        "--base-url",
+        default=os.getenv("SAIA_BASE_URL", SAIA_DEFAULT_BASE_URL),
+        help="SAIA API base URL (or set SAIA_BASE_URL env var)",
     )
     parser.add_argument(
         "--output-dir",
         default="analysis_embeddings",
-        help="Output directory for synthetic tools"
+        help="Output directory for synthetic tools",
     )
     parser.add_argument(
         "--model",
-        default="llama-3.3-70b-versatile",
-        help="Groq model to use"
+        default=SAIA_DEFAULT_MODEL,
+        help="SAIA model to use",
     )
     parser.add_argument(
         "--max-tools-to-process",
         type=int,
         default=0,
-        help="Max tools to process (0 = all)"
+        help="Maximum number of unique normalized IDs to process (0 = all)",
     )
     parser.add_argument(
         "--offset",
         type=int,
         default=0,
-        help="Skip first N tools (for batch processing)"
+        help="Skip the first N normalized IDs (for batch processing)",
     )
     parser.add_argument(
         "--test",
         action="store_true",
-        help="Test API connection and exit"
+        help="Test API connection and exit",
     )
-    
+
     args = parser.parse_args()
-    
-    # Get Groq token
-    groq_token = args.hf_token or os.getenv("GROQ_API_KEY")
-    if not groq_token:
-        print("Error: Groq API token required. Set GROQ_API_KEY env var or use --hf-token", file=sys.stderr)
+
+    api_key = args.api_key or os.getenv("SAIA_API_KEY") or os.getenv("EXECUTING_LLM_API_KEY")
+    if not api_key:
+        print(
+            "Error: SAIA API key required. Set SAIA_API_KEY env var or use --api-key",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    
-    # Test API if requested
+
     if args.test:
-        test_huggingface_api(groq_token, model=args.model)
+        test_api(api_key, args.base_url, model=args.model)
         sys.exit(0)
-    
-    # Load data
-    print("Loading tools...")
-    tools = load_tools(args.tools)
-    print(f"  Loaded {len(tools)} tools")
-    
-    print(f"Loading neighbors (threshold={args.similarity_threshold})...")
-    neighbors = load_neighbors(args.neighbors, args.similarity_threshold)
-    print(f"  Found neighbors for {len(neighbors)} tools")
-    
+
+    print("Loading normalized tool set...")
+    contexts = load_normalized_tool_contexts(args.tools)
+
     print("Loading benchmark tasks...")
-    task_map = load_benchmark_tasks(args.benchmark, set(tools.keys()))
-    print(f"  Mapped {len(task_map)} tools to tasks")
-    
-    # Analyze gaps
-    tools_needing_synthetic = []
-    for tool_name in sorted(tools.keys()):
-        neighbor_count = len(neighbors.get(tool_name, []))
-        if neighbor_count < args.min_similar_tools:
-            tools_needing_synthetic.append((tool_name, neighbor_count))
-    
-    print(f"\nTools needing synthetic candidates: {len(tools_needing_synthetic)}")
-    print(f"Total gap: {sum(max(0, args.min_similar_tools - count) for _, count in tools_needing_synthetic)} tools")
-    
-    # Generate synthetic tools
+    benchmark_records = load_benchmark_records(args.benchmark)
+    print(f"  Loaded {len(benchmark_records)} benchmark records")
+
+    print("Matching each normalized ID to benchmark task context...")
+    attach_benchmark_tasks(contexts, benchmark_records)
+    with_tasks = sum(1 for c in contexts.values() if c.get("tasks"))
+    print(f"  Matched tasks for {with_tasks}/{len(contexts)} normalized IDs")
+
+    # Deterministic ID order.  The IDs are integers, but do not assume they are
+    # perfectly contiguous.
+    unique_ids = sorted(contexts)
+    ids_to_process = unique_ids[args.offset :]
+
+    if args.offset > 0:
+        print(f"Skipping first {args.offset} normalized IDs (offset={args.offset})")
+
+    if args.max_tools_to_process > 0:
+        ids_to_process = ids_to_process[: args.max_tools_to_process]
+
+    print(f"\nUnique normalized IDs selected: {len(ids_to_process)}")
+    print(
+        f"Target synthetic tools: {len(ids_to_process) * SYNTHETIC_TOOLS_PER_ID} "
+        f"({SYNTHETIC_TOOLS_PER_ID} per ID)"
+    )
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     synthetic_output = output_dir / "tools_en_synthetic_candidates.jsonl"
-    metadata_output = output_dir / "tools_en_synthetic_metadata.csv"
-    
+    metadata_output = output_dir / "tools_en_synthetic_metadata.json"
+
     synthetic_tools_all = []
     metadata_rows = []
-    
-    # Apply offset for batch processing
-    tools_to_process = tools_needing_synthetic[args.offset:]
-    if args.offset > 0:
-        print(f"Skipping first {args.offset} tools (offset={args.offset})")
-    
-    processed = 0
-    for idx, (tool_name, current_count) in enumerate(tools_to_process):
-        if args.max_tools_to_process > 0 and processed >= args.max_tools_to_process:
-            print(f"\nReached max tools to process ({args.max_tools_to_process})")
-            break
-        
-        num_needed = args.min_similar_tools - current_count
-        absolute_idx = args.offset + idx + 1
-        total_count = len(tools_needing_synthetic)
-        print(f"\n[{absolute_idx}/{total_count}] {tool_name}: {current_count}/{args.min_similar_tools} → generating {num_needed}")
-        
-        tool_def = tools[tool_name]
-        tool_neighbors = neighbors.get(tool_name, [])
-        tool_tasks = task_map.get(tool_name, [])
-        
-        synthetic = generate_synthetic_tools_for_tool(
-            tool_name, tool_def, tool_neighbors, tool_tasks, groq_token, args.model, num_to_generate=num_needed
+
+    for local_idx, normalized_id in enumerate(ids_to_process, start=1):
+        context = contexts[normalized_id]
+        tool_name = context["representative_name"]
+        tasks = context.get("tasks", [])
+        co_tools = context.get("cooccurring_tools", [])
+
+        absolute_idx = args.offset + local_idx
+        print(
+            f"\n[{absolute_idx}/{len(unique_ids)}] normalized_tool_id={normalized_id} "
+            f"{tool_name}: generating {SYNTHETIC_TOOLS_PER_ID}"
         )
-        
-        if synthetic:
-            print(f"  Generated {len(synthetic)} synthetic tools")
-            for syn_tool in synthetic:
-                syn_tool["_source_tool"] = tool_name
-                syn_tool["_synthetic"] = True
-                synthetic_tools_all.append(syn_tool)
-                
-                # Extract parameters info
-                func = syn_tool.get('function', {})
-                params = func.get('parameters', {})
-                param_names = list(params.get('properties', {}).keys())
-                required_params = params.get('required', [])
-                
-                metadata_rows.append({
+        print(
+            f"  first occurrence row={context['first_row_number']}, "
+            f"occurrences={context['occurrence_count']}, "
+            f"tasks={len(tasks)}, co-occurring tools={len(co_tools)}"
+        )
+
+        synthetic = generate_synthetic_tools_for_id(context, api_key, args.base_url, args.model)
+
+        if not synthetic:
+            print("  Failed to generate synthetic tools")
+            continue
+
+        print(f"  Generated {len(synthetic)} synthetic tools")
+
+        for syn_tool in synthetic:
+            syn_tool["_source_tool_id"] = normalized_id
+            syn_tool["_source_tool"] = tool_name
+            syn_tool["_synthetic"] = True
+            synthetic_tools_all.append(syn_tool)
+
+            func = syn_tool.get("function", {})
+            params = func.get("parameters", {}) if isinstance(func, dict) else {}
+            param_names = list(params.get("properties", {}).keys()) if isinstance(params, dict) else []
+            required_params = params.get("required", []) if isinstance(params, dict) else []
+
+            metadata_rows.append(
+                {
+                    "source_normalized_tool_id": normalized_id,
                     "source_tool": tool_name,
-                    "synthetic_tool_name": func.get('name', 'unknown'),
-                    "synthetic_tool_description": func.get('description', ''),
-                    "parameters": ','.join(param_names) if param_names else '',
-                    "required_parameters": ','.join(required_params) if required_params else '',
-                })
-        else:
-            print(f"  Failed to generate synthetic tools")
-        
-        processed += 1
-    
-    # Write outputs (append mode for batch processing)
-    print(f"\nWriting outputs...")
-    mode = 'a' if args.offset > 0 else 'w'  # Append if offset > 0 (batch mode), else overwrite
-    with open(synthetic_output, mode, encoding='utf-8') as f:
+                    "source_first_occurrence_row": context["first_row_number"],
+                    "source_occurrence_count": context["occurrence_count"],
+                    "benchmark_row_index": context.get("benchmark_row_index"),
+                    "benchmark_task_count": len(tasks),
+                    "benchmark_tasks": tasks,
+                    "cooccurring_tool_ids": [
+                        t.get("normalized_tool_id") for t in co_tools
+                    ],
+                    "cooccurring_tool_names": [
+                        _tool_name(t) for t in co_tools
+                    ],
+                    "synthetic_tool_name": func.get("name", "unknown"),
+                    "synthetic_tool_description": func.get("description", ""),
+                    "parameters": param_names,
+                    "required_parameters": required_params if isinstance(required_params, list) else [],
+                }
+            )
+
+    print("\nWriting outputs...")
+
+    # Preserve the original script's batching behavior: offset > 0 appends the
+    # JSONL candidates.  Metadata is merged into one JSON array.
+    mode = "a" if args.offset > 0 else "w"
+    with open(synthetic_output, mode, encoding="utf-8") as f:
         for tool in synthetic_tools_all:
-            f.write(json.dumps(tool, ensure_ascii=False) + '\n')
-    print(f"  Wrote {len(synthetic_tools_all)} synthetic tools to {synthetic_output} ({mode}ode)")
-    
-    # Write metadata as JSON instead of CSV (append for batch processing)
-    metadata_output = output_dir / "tools_en_synthetic_metadata.json"
-    if args.offset > 0:
-        # Append to existing metadata
+            f.write(json.dumps(tool, ensure_ascii=False) + "\n")
+
+    print(
+        f"  Wrote {len(synthetic_tools_all)} synthetic tools to "
+        f"{synthetic_output} (mode={mode})"
+    )
+
+    if args.offset > 0 and metadata_output.exists():
         try:
-            with open(metadata_output, 'r', encoding='utf-8') as f:
+            with open(metadata_output, "r", encoding="utf-8") as f:
                 existing_metadata = json.load(f)
-            existing_metadata.extend(metadata_rows)
-            metadata_rows = existing_metadata
-        except (FileNotFoundError, json.JSONDecodeError):
+            if isinstance(existing_metadata, list):
+                metadata_rows = existing_metadata + metadata_rows
+        except (OSError, json.JSONDecodeError):
             pass
-    
-    with open(metadata_output, 'w', encoding='utf-8') as f:
+
+    with open(metadata_output, "w", encoding="utf-8") as f:
         json.dump(metadata_rows, f, ensure_ascii=False, indent=2)
+
     print(f"  Wrote metadata to {metadata_output}")
-    
     print(f"\nDone! Generated {len(synthetic_tools_all)} synthetic tools")
 
 

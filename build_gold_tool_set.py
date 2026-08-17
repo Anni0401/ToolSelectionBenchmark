@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
 Build gold tool set by:
-1. Deduplicating tools (keep first occurrence)
-2. Remove synthetic tools with exact name match to originals
-3. Remove synthetic tools >0.65 similar to unrelated originals
-4. Remove synthetic tool pairs >0.75 similar from different parents
+1. Deduplicating originals by normalized_tool_id (keep first occurrence), synthetics by name
+2. Cap synthetic tools to at most 2 per source normalized_tool_id (keep first occurrences)
+3. Remove synthetic tools with exact name match to originals
+4. Remove synthetic tools >0.75 similar to unrelated originals
+5. Remove synthetic tool pairs >0.9 similar from different parents
+
+Originals are expected to carry a `normalized_tool_id` field (see
+tools_en_with_normalized_tool_ids.jsonl) and synthetics carry `_source_tool_id`
+pointing at the normalized_tool_id of the original they were generated from.
 """
 
 import argparse
@@ -43,28 +48,41 @@ def load_json_or_jsonl(path):
     return data
 
 
+def _dedup_key(tool):
+    f = tool.get('function', {})
+    name = f.get('name', '')
+    desc = ' '.join((f.get('description') or '').split()).strip().lower()
+    return (name, desc)
+
+
 def deduplicate_by_name(tools):
-    """Keep only first occurrence of each tool name."""
+    """Keep first occurrence by (name, normalized description)."""
     seen = set()
     unique = []
     for tool in tools:
-        name = tool['function']['name']
-        if name not in seen:
-            seen.add(name)
+        key = _dedup_key(tool)
+        if key not in seen:
+            seen.add(key)
             unique.append(tool)
     return unique
 
 
-def get_synthetic_parent(tool):
-    """Extract parent original tool name if available."""
-    if 'created_from' in tool:
-        return tool['created_from']
-    # Alternative field names to check
-    if 'parent' in tool:
-        return tool['parent']
-    if 'original_tool' in tool:
-        return tool['original_tool']
-    return None
+def deduplicate_by_normalized_id(tools):
+    """Keep first occurrence per normalized_tool_id."""
+    seen = set()
+    unique = []
+    for tool in tools:
+        tool_id = tool.get('normalized_tool_id')
+        if tool_id is None or tool_id in seen:
+            continue
+        seen.add(tool_id)
+        unique.append(tool)
+    return unique
+
+
+def get_synthetic_parent_id(tool):
+    """Extract the normalized_tool_id of the original a synthetic tool was created from."""
+    return tool.get('_source_tool_id')
 
 
 def batch_embedding_local(model_name, inputs, batch_size=64):
@@ -91,9 +109,10 @@ def cosine_similarity(vec1, vec2):
 def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_dir="analysis_embeddings"):
     """
     Apply filtering rules:
-    1. Remove synthetic tools with exact name match to originals
-    2. Remove synthetic tools >0.65 similar to unrelated originals
-    3. Remove synthetic tool pairs >0.75 similar from different parents
+    1. Cap synthetic tools to at most 2 per source normalized_tool_id (keep first occurrences)
+    2. Remove synthetic tools with exact name match to originals
+    3. Remove synthetic tools >0.75 similar to unrelated originals
+    4. Remove synthetic tool pairs >0.9 similar from different parents
     """
     
     output_dir = Path(output_dir)
@@ -101,17 +120,32 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
     
     # Build maps
     orig_names = {t['function']['name']: t for t in originals}
+    orig_id_by_name = {t['function']['name']: t.get('normalized_tool_id') for t in originals}
     synth_map = {t['function']['name']: t for t in synthetics}
     
     print(f"Starting with {len(originals)} originals and {len(synthetics)} synthetics")
     
-    # Rule 1: Remove exact name matches
+    # Rule 1: Cap synthetics to at most 2 per source normalized_tool_id (keep first occurrences)
+    max_synthetics_per_id = 2
+    per_id_counts = defaultdict(int)
+    rule1_cap_removals = set()
+    for synth_name, synth_tool in synth_map.items():
+        parent_id = get_synthetic_parent_id(synth_tool)
+        per_id_counts[parent_id] += 1
+        if per_id_counts[parent_id] > max_synthetics_per_id:
+            rule1_cap_removals.add(synth_name)
+    
+    print(f"Rule 1 - Capped to {max_synthetics_per_id} synthetics per source ID: {len(rule1_cap_removals)}")
+    for name in rule1_cap_removals:
+        synth_map.pop(name, None)
+    
+    # Rule 2: Remove exact name matches
     exact_matches = set()
     for synth_name in synth_map:
         if synth_name in orig_names:
             exact_matches.add(synth_name)
     
-    print(f"Rule 1 - Exact name matches to remove: {len(exact_matches)}")
+    print(f"Rule 2 - Exact name matches to remove: {len(exact_matches)}")
     for name in exact_matches:
         del synth_map[name]
     
@@ -131,50 +165,52 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
                 'similarity': sim
             })
     
-    # Rule 2: Remove synthetic tools >0.65 similar to unrelated originals
-    rule2_removals = set()
+    # Rule 3: Remove synthetic tools >0.75 similar to unrelated originals
+    rule3_removals = set()
     for synth_name in list(synth_map.keys()):
-        parent = get_synthetic_parent(synth_map[synth_name])
+        parent_id = get_synthetic_parent_id(synth_map[synth_name])
         
         # Find neighbors of this synthetic tool
         neighbors = neighbors_by_tool.get(synth_name, [])
         
         for neighbor in neighbors:
-            # Check if it's an original AND not the parent AND >0.65 similar
-            if neighbor['type'] == 'original' and neighbor['name'] != parent and neighbor['similarity'] > 0.65:
-                rule2_removals.add(synth_name)
+            # Check if it's an original AND not the parent AND >0.75 similar
+            neighbor_id = orig_id_by_name.get(neighbor['name'])
+            if neighbor['type'] == 'original' and neighbor_id != parent_id and neighbor['similarity'] > 0.75:
+                rule3_removals.add(synth_name)
                 break
     
-    print(f"Rule 2 - High similarity to unrelated originals (>0.65): {len(rule2_removals)}")
-    for name in rule2_removals:
+    print(f"Rule 3 - High similarity to unrelated originals (>0.75): {len(rule3_removals)}")
+    for name in rule3_removals:
         del synth_map[name]
     
-    # Rule 3: Remove synthetic tool pairs >0.75 similar from different parents
-    rule3_removals = set()
+    # Rule 4: Remove synthetic tool pairs >0.95 similar from different parents
+    rule4_removals = set()
     synth_names_list = list(synth_map.keys())
     
     for i, synth1_name in enumerate(synth_names_list):
-        if synth1_name in rule3_removals:
+        if synth1_name in rule4_removals:
             continue
             
-        parent1 = get_synthetic_parent(synth_map[synth1_name])
+        parent1 = get_synthetic_parent_id(synth_map[synth1_name])
         neighbors = neighbors_by_tool.get(synth1_name, [])
         
         for neighbor in neighbors:
             synth2_name = neighbor['name']
             
-            # Check if it's synthetic AND >0.75 similar AND different parents
-            if neighbor['type'] == 'synthetic' and neighbor['similarity'] > 0.75:
-                parent2 = get_synthetic_parent(synth_map.get(synth2_name))
+            # Check if it's synthetic AND >0.9 similar AND different parents
+            if neighbor['type'] == 'synthetic' and neighbor['similarity'] > 0.95:
+                synth2_tool = synth_map.get(synth2_name)
+                parent2 = get_synthetic_parent_id(synth2_tool) if synth2_tool else None
                 
                 if parent1 != parent2:
                     # Remove both
-                    rule3_removals.add(synth1_name)
-                    rule3_removals.add(synth2_name)
+                    rule4_removals.add(synth1_name)
+                    rule4_removals.add(synth2_name)
                     break
     
-    print(f"Rule 3 - High similarity pairs from different parents (>0.75): {len(rule3_removals)}")
-    for name in rule3_removals:
+    print(f"Rule 4 - High similarity pairs from different parents (>0.95): {len(rule4_removals)}")
+    for name in rule4_removals:
         synth_map.pop(name, None)
     
     # Final sets
@@ -195,14 +231,23 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
     
     print(f"\nSaved gold tool set to {gold_output}")
     
+    # Save final synthetic tools separately
+    synthetic_output = output_dir / 'tools_en_gold_synthetic.jsonl'
+    with open(synthetic_output, 'w') as f:
+        for tool in final_synthetics:
+            f.write(json.dumps(tool) + '\n')
+    
+    print(f"Saved final synthetic tools to {synthetic_output}")
+    
     # Save removal report
     report = {
         'total_original_before': len(originals),
         'total_synthetic_before': len(synthetics),
-        'rule1_exact_name_match': len(exact_matches),
-        'rule2_high_sim_unrelated_original': len(rule2_removals),
-        'rule3_high_sim_synthetic_pairs': len(rule3_removals),
-        'total_removed': len(exact_matches) + len(rule2_removals) + len(rule3_removals),
+        'rule1_capped_per_source_id': len(rule1_cap_removals),
+        'rule2_exact_name_match': len(exact_matches),
+        'rule3_high_sim_unrelated_original': len(rule3_removals),
+        'rule4_high_sim_synthetic_pairs': len(rule4_removals),
+        'total_removed': len(rule1_cap_removals) + len(exact_matches) + len(rule3_removals) + len(rule4_removals),
         'final_original_count': len(final_originals),
         'final_synthetic_count': len(final_synthetics),
         'final_total_count': len(final_all),
@@ -219,7 +264,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
 
 def main():
     parser = argparse.ArgumentParser(description="Build gold tool set with filtering rules")
-    parser.add_argument('--originals', default='multi-agent-framework/tools/tools_en.jsonl')
+    parser.add_argument('--originals', default='multi-agent-framework/tools/tools_en_with_normalized_tool_ids.jsonl')
     parser.add_argument('--synthetics', default='analysis_embeddings/tools_en_synthetic_candidates.jsonl')
     parser.add_argument('--neighbors', default='analysis_embeddings/tools_en_all_neighbors.csv')
     parser.add_argument('--model', default='all-MiniLM-L6-v2')
@@ -231,8 +276,8 @@ def main():
     originals = load_json_or_jsonl(args.originals)
     synthetics = load_json_or_jsonl(args.synthetics)
     
-    print(f"Deduplicating by tool name...")
-    originals = deduplicate_by_name(originals)
+    print(f"Deduplicating originals by normalized_tool_id, synthetics by name...")
+    originals = deduplicate_by_normalized_id(originals)
     synthetics = deduplicate_by_name(synthetics)
     
     print(f"After deduplication:")

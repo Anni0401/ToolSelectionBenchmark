@@ -2060,8 +2060,17 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         self.embedding_cache = {}
         self.last_selection_metrics = {}
         self.tools_cache = None
+        self.tools_en_file = os.getenv("LANGGRAPH_TOOLS_EN_FILE") or os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../multi-agent-framework/tools/tools_en.jsonl",
+            )
+        )
+        self.task_tools_by_index = []
+        self.task_tools_by_benchmark_id = {}
         self._load_cache()
         self._load_valid_tools_from_schema_cache()
+        self._load_task_tools_reference()
 
     def _extract_query(self, messages: list) -> str:
         """Extract the latest user query and prepend the Qwen3 instruction prefix."""
@@ -2071,6 +2080,178 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                 if isinstance(content, str):
                     return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {content[:500]}"
         return ""
+
+    @staticmethod
+    def _tool_signature(tool: dict) -> tuple:
+        """Full identity key (name+description+parameters) for a tool.
+
+        The tool set can contain synthetic distractor tools that share a name
+        with another tool but differ in description/parameters, so name-only
+        deduplication would silently drop one of them and risk returning the
+        wrong full JSON schema to the executing LLM.
+        """
+        func = tool.get("function", {}) or {}
+        name = str(func.get("name", "")).strip()
+        desc = " ".join(str(func.get("description", "")).split()).strip().lower()
+        params = json.dumps(func.get("parameters", {}), sort_keys=True, ensure_ascii=False)
+        return (name, desc, params)
+
+    @staticmethod
+    def _tool_embedding_text(tool: dict) -> str:
+        """Embedding/cache-key text covering name, description and parameters.
+
+        Including parameters distinguishes tools that share a name and
+        description but expose a different schema (e.g. synthetic variants).
+        """
+        func = tool.get("function", {}) or {}
+        name = func.get("name", "")
+        desc = func.get("description", "")
+        params = json.dumps(func.get("parameters", {}), sort_keys=True, ensure_ascii=False)
+        return f"{name}: {desc}\nParameters: {params}"
+
+    @staticmethod
+    def _normalize_required(required: Any) -> list:
+        if isinstance(required, list):
+            return [str(item) for item in required]
+        return []
+
+    @staticmethod
+    def _to_int_or_none(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_tools_from_jsonl_entry(entry: Any) -> list:
+        if isinstance(entry, list):
+            return entry
+        if isinstance(entry, dict):
+            for key in ("tools", "tool_schemas", "available_tools"):
+                value = entry.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
+
+    @staticmethod
+    def _required_override_signature(tool: dict) -> tuple:
+        """Name+parameter-names key used to locate the task's true required list."""
+        func = tool.get("function", {}) if isinstance(tool, dict) else {}
+        params = func.get("parameters", {}) if isinstance(func, dict) else {}
+        props = params.get("properties", {}) if isinstance(params, dict) else {}
+        param_names = tuple(sorted(props.keys())) if isinstance(props, dict) else tuple()
+        return (func.get("name"), param_names)
+
+    def _load_task_tools_reference(self):
+        """Load per-task tools from tools_en.jsonl to recover task-specific required fields."""
+        if not os.path.exists(self.tools_en_file):
+            print(f"[QWEN3 EMBEDDING SELECTOR] tools_en reference file not found: {self.tools_en_file}")
+            return
+
+        try:
+            with open(self.tools_en_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    try:
+                        entry = json.loads(line)
+                    except Exception:
+                        continue
+
+                    entry_tools = self._extract_tools_from_jsonl_entry(entry)
+                    self.task_tools_by_index.append(entry_tools)
+
+                    if isinstance(entry, dict):
+                        benchmark_task_id = entry.get("benchmark_task_id")
+                        if benchmark_task_id is None:
+                            benchmark_task_id = entry.get("benchmark_task")
+                        benchmark_task_id = self._to_int_or_none(benchmark_task_id)
+                        if benchmark_task_id is not None:
+                            self.task_tools_by_benchmark_id[benchmark_task_id] = entry_tools
+
+            print(
+                "[QWEN3 EMBEDDING SELECTOR] Loaded task-tool reference rows: "
+                f"{len(self.task_tools_by_index)} from {os.path.basename(self.tools_en_file)}"
+            )
+        except Exception as e:
+            print(f"[WARNING] Failed to load tools_en reference file: {e}")
+
+    def _get_task_tools_for_request(self, request_tools: list) -> tuple[list, Optional[int], Optional[int], int]:
+        """Resolve task tools by benchmark_task_id/task_idx with robust index fallback."""
+        benchmark_task_id = self._to_int_or_none(getattr(_request_context, "benchmark_task_id", None))
+        task_idx = self._to_int_or_none(getattr(_request_context, "task_idx", None))
+
+        if benchmark_task_id is not None and benchmark_task_id in self.task_tools_by_benchmark_id:
+            return self.task_tools_by_benchmark_id[benchmark_task_id], benchmark_task_id, None, 0
+
+        if task_idx is None or not self.task_tools_by_index:
+            return [], benchmark_task_id, task_idx, 0
+
+        candidate_indices = []
+        if 0 <= task_idx < len(self.task_tools_by_index):
+            candidate_indices.append(task_idx)
+        if task_idx > 0 and 0 <= task_idx - 1 < len(self.task_tools_by_index):
+            candidate_indices.append(task_idx - 1)
+
+        if not candidate_indices:
+            return [], benchmark_task_id, task_idx, 0
+
+        # If task_idx indexing convention is unclear, choose the candidate line
+        # that best matches the incoming request tools.
+        request_signatures = {self._required_override_signature(t) for t in (request_tools or [])}
+        best_idx = candidate_indices[0]
+        best_score = -1
+        for idx in candidate_indices:
+            candidate_signatures = {self._required_override_signature(t) for t in self.task_tools_by_index[idx]}
+            score = len(candidate_signatures.intersection(request_signatures)) if request_signatures else 0
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        return self.task_tools_by_index[best_idx], benchmark_task_id, task_idx, best_score
+
+    def _apply_required_overrides_for_task(self, tools: list, task_tools: list) -> tuple[list, int]:
+        """Overwrite required fields for tools matching the task's true name + parameter names.
+
+        The embedded/deduped tool set can collapse tools that share a name and
+        parameter set but need a different 'required' list for this specific
+        task, so the task's own tools_en.jsonl entry is the source of truth.
+        """
+        if not tools or not task_tools:
+            return tools, 0
+
+        task_required_by_signature = {}
+        for task_tool in task_tools:
+            signature = self._required_override_signature(task_tool)
+            if not signature[0]:
+                continue
+            params = task_tool.get("function", {}).get("parameters", {})
+            task_required_by_signature[signature] = self._normalize_required(params.get("required"))
+
+        if not task_required_by_signature:
+            return tools, 0
+
+        adjusted_tools = []
+        overrides_count = 0
+
+        for tool in tools:
+            signature = self._required_override_signature(tool)
+            if signature in task_required_by_signature:
+                required = task_required_by_signature[signature]
+                tool_copy = copy.deepcopy(tool)
+                tool_copy.setdefault("function", {})
+                tool_copy["function"].setdefault("parameters", {})
+                tool_copy["function"]["parameters"]["required"] = required
+                adjusted_tools.append(tool_copy)
+                overrides_count += 1
+            else:
+                adjusted_tools.append(tool)
+
+        return adjusted_tools, overrides_count
 
     def select(self, messages: list, tools: list) -> list:
         """Select top-k tools using Qwen3-Embedding-8B via local vLLM endpoint."""
@@ -2120,8 +2301,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         for tool in all_tools:
             func = tool.get("function", {})
             name = func.get("name", "")
-            desc = func.get("description", "")
-            tool_desc = f"{name}: {desc}"
+            tool_desc = self._tool_embedding_text(tool)
 
             if tool_desc in self.embedding_cache and _valid_embedding(self.embedding_cache[tool_desc]):
                 embedding = self.embedding_cache[tool_desc]
@@ -2160,17 +2340,20 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
 
         selected = []
         selected_scores = []
-        seen_tool_names = set()
+        seen_signatures = set()
 
         for idx in sorted_indices:
             tool = valid_tools[idx]
-            tool_name = tool.get("function", {}).get("name", "unknown")
-            if tool_name not in seen_tool_names:
+            signature = self._tool_signature(tool)
+            if signature not in seen_signatures:
                 selected.append(tool)
                 selected_scores.append(similarities[idx])
-                seen_tool_names.add(tool_name)
+                seen_signatures.add(signature)
                 if len(selected) >= self.top_k:
                     break
+
+        task_tools, benchmark_task_id, task_idx, task_match_score = self._get_task_tools_for_request(tools)
+        selected, overrides_count = self._apply_required_overrides_for_task(selected, task_tools)
 
         print(f"\n[QWEN3 EMBEDDING SELECTOR]")
         print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
@@ -2178,6 +2361,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         print(f"  Total available tools: {len(all_tools)}")
         print(f"  Top-k (unique): {self.top_k}")
         print(f"  Cache hits: {cached_count}, Runtime computed: {missing_count}")
+        print(f"  Required overrides applied: {overrides_count}")
         print(f"  Selected tools (ranked by relevance):")
         for i, (tool, score) in enumerate(zip(selected[:5], selected_scores[:5])):
             tool_name = tool.get("function", {}).get("name", "unknown")
@@ -2208,9 +2392,13 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                 "runtime_computed": missing_count,
                 "model": self.model,
                 "similarity_scores": {
-                    tool.get("function", {}).get("name", "unknown"): float(score)
-                    for tool, score in zip(selected, selected_scores)
+                    f"{tool.get('function', {}).get('name', 'unknown')}#{i}": float(score)
+                    for i, (tool, score) in enumerate(zip(selected, selected_scores))
                 },
+                "required_overrides": overrides_count,
+                "benchmark_task_id": benchmark_task_id,
+                "task_idx": task_idx,
+                "task_row_match_score": task_match_score,
                 **embedding_metrics,
             },
         )
@@ -2228,14 +2416,17 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                 "openai package is required. Install with: pip install openai"
             )
 
-        seen_names = set()
+        seen_keys = set()
         unique_tools = []
         duplicates = 0
         for tool in tools:
-            tool_name = tool.get("function", {}).get("name", "unknown")
-            if tool_name not in seen_names:
+            func = tool.get("function", {})
+            tool_name = func.get("name", "unknown")
+            tool_desc_key = " ".join(str(func.get("description", "")).split()).strip().lower()
+            key = (tool_name, tool_desc_key)
+            if key not in seen_keys:
                 unique_tools.append(tool)
-                seen_names.add(tool_name)
+                seen_keys.add(key)
             else:
                 duplicates += 1
 
@@ -2253,10 +2444,8 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         tool_indices = []
 
         for idx, tool in enumerate(unique_tools):
-            func = tool.get("function", {})
-            name = func.get("name", "unknown")
-            desc = func.get("description", "")
-            tool_desc = f"{name}: {desc}"
+            name = tool.get("function", {}).get("name", "unknown")
+            tool_desc = self._tool_embedding_text(tool)
 
             if tool_desc in self.embedding_cache:
                 print(f"  [{idx+1}/{len(unique_tools)}] {name} - (cached)")
@@ -2758,6 +2947,13 @@ def _build_execution_system_prompt(reasoning: str, model_name: str) -> str:
             "For Poolside/Laguna models, follow the native tool-call syntax expected by the backend: "
             "use standard OpenAI tool calls and avoid any alternative header-style or raw parser-specific syntax."
         )
+    if "gpt-oss-120b" in model_l or "gpt-oss" in model_l:
+        return (
+            f"{base} "
+            "Tool use must be returned only inside tool_calls[] as standard OpenAI "
+            "tool-call objects. Do not place tool JSON inside content, do not wrap it in prose, and do not "
+            "emit pseudo-JSON or markdown code fences. If a tool is needed, the content field must stay empty."
+        )
     return (
         f"{base} "
         "For standard OpenAI-compatible backends, prefer the standard OpenAI tool-call format and "
@@ -2971,7 +3167,126 @@ def _normalize_returned_tool_calls(tool_calls: list) -> list:
         else:
             result.append(tc)
     return result
+_RAW_HARMONY_MARKERS = (
+    "<|start|>",
+    "<|end|>",
+    "<|channel|>",
+    "<|endoftext|>",
+)
 
+
+def _sanitize_history_for_gpt_oss(messages: list) -> list:
+    """
+    Prepare already-stored conversation history for re-sending to GPT-OSS.
+
+    This does NOT recover malformed tool calls and does NOT turn text into
+    tool calls. It only prevents raw Harmony/model control syntax from being
+    sent back to vLLM, where it can trigger HarmonyError.
+
+    Valid OpenAI-style tool_calls are preserved unchanged.
+    """
+    cleaned_messages = []
+
+    for idx, original in enumerate(messages):
+        if not isinstance(original, dict):
+            cleaned_messages.append(original)
+            continue
+
+        msg = copy.deepcopy(original)
+
+        # --------------------------------------------------
+        # 1. Clean ordinary content
+        # --------------------------------------------------
+        content = msg.get("content")
+
+        if isinstance(content, str):
+            cleaned = content
+
+            # Raw special tokens must never be round-tripped through
+            # OpenAI-style message history.
+            for marker in _RAW_HARMONY_MARKERS:
+                if marker in cleaned:
+                    print(
+                        f"[HISTORY] Removing raw Harmony marker "
+                        f"{marker!r} from message {idx}"
+                    )
+                    cleaned = cleaned.split(marker, 1)[0].rstrip()
+
+            msg["content"] = cleaned
+
+        # --------------------------------------------------
+        # 2. Validate actual OpenAI tool_calls
+        # --------------------------------------------------
+        tool_calls = msg.get("tool_calls")
+
+        if tool_calls:
+            valid_calls = []
+
+            for tc_idx, tc in enumerate(tool_calls):
+                if not isinstance(tc, dict):
+                    raise RuntimeError(
+                        f"Invalid tool_call in history message {idx}, "
+                        f"index {tc_idx}: expected dict, got {type(tc)}"
+                    )
+
+                function = tc.get("function")
+
+                if not isinstance(function, dict):
+                    raise RuntimeError(
+                        f"Malformed tool_call in history message {idx}, "
+                        f"index {tc_idx}: missing standard OpenAI "
+                        f"'function' object: {tc!r}"
+                    )
+
+                name = function.get("name")
+                arguments = function.get("arguments")
+
+                if not isinstance(name, str) or not name.strip():
+                    raise RuntimeError(
+                        f"Malformed tool_call name in history message "
+                        f"{idx}, index {tc_idx}: {name!r}"
+                    )
+
+                # This is exactly the kind of corruption causing your error.
+                if (
+                    "to=functions." in name
+                    or any(marker in name for marker in _RAW_HARMONY_MARKERS)
+                    or "\u00a0" in name
+                ):
+                    raise RuntimeError(
+                        f"Raw GPT-OSS/Harmony syntax leaked into tool name "
+                        f"in history message {idx}: {name!r}"
+                    )
+
+                # OpenAI expects arguments to be a JSON string.
+                # Converting dict -> JSON string is serialization,
+                # not recovery of a failed model call.
+                tc_copy = copy.deepcopy(tc)
+                if isinstance(arguments, dict):
+                    tc_copy["function"]["arguments"] = json.dumps(
+                        arguments,
+                        ensure_ascii=False,
+                    )
+
+                valid_calls.append(tc_copy)
+
+            msg["tool_calls"] = valid_calls
+
+        # --------------------------------------------------
+        # 3. Catch raw Harmony syntax elsewhere in the msg
+        # --------------------------------------------------
+        raw = json.dumps(msg, ensure_ascii=False)
+
+        if "to=functions." in raw:
+            raise RuntimeError(
+                "Raw GPT-OSS/Harmony 'to=functions.' syntax leaked "
+                f"into message history at message {idx}: "
+                f"{raw[:1500]}"
+            )
+
+        cleaned_messages.append(msg)
+
+    return cleaned_messages
 
 def _invoke_llm(messages: list, tools: list = None):
     """Invoke a local OpenAI/vLLM-compatible endpoint.
@@ -2994,20 +3309,14 @@ def _invoke_llm(messages: list, tools: list = None):
     # Prepend a strict execution-system prompt if not already present.
     reasoning = os.getenv("EXECUTING_LLM_REASONING", "medium")
     messages_to_send = list(messages)
-    if not messages_to_send or messages_to_send[0].get("role") != "system":
-        messages_to_send.insert(0, {
-            "role": "system",
-            "content": _build_execution_system_prompt(reasoning, model)
-        })
-    else:
-        messages_to_send[0] = {
-            "role": "system",
-            "content": _build_execution_system_prompt(reasoning, model)
-        }
+
 
     # Normalize all messages: convert any to=functions.X tool calls to standard format
     # before sending to vLLM, which would otherwise reject them with a 500.
     messages_to_send = _normalize_messages_for_llm(messages_to_send)
+    # Prevent raw GPT-OSS/Harmony syntax from being round-tripped
+    # through conversation history.
+    messages_to_send = _sanitize_history_for_gpt_oss(messages_to_send)
 
     payload = {
         "messages": messages_to_send,
@@ -3019,6 +3328,7 @@ def _invoke_llm(messages: list, tools: list = None):
     # Add tools if provided
     if tools:
         payload["tools"] = tools
+        payload["tool_choice"] = "auto"
 
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {

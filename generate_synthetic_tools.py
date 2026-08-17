@@ -406,6 +406,49 @@ def _parse_generated_tools(response):
     return valid
 
 
+def load_completed_source_ids(path, expected_per_id=SYNTHETIC_TOOLS_PER_ID):
+    """Return source normalized IDs that already have a complete generated set.
+
+    The synthetic result JSONL stores the source ID in ``_source_tool_id``.
+    An ID is treated as complete only when at least ``expected_per_id`` valid
+    synthetic tools are already present. This makes reruns safe after partial
+    failures: incomplete IDs are generated again, complete IDs are skipped.
+    """
+    path = Path(path)
+    if not path.exists():
+        return set(), {}
+
+    counts = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                tool = json.loads(line)
+            except json.JSONDecodeError:
+                print(
+                    f"WARNING: ignoring invalid JSON in existing result line {line_no}: {path}",
+                    file=sys.stderr,
+                )
+                continue
+
+            source_id = tool.get("_source_tool_id") if isinstance(tool, dict) else None
+            try:
+                source_id = int(source_id)
+            except (TypeError, ValueError):
+                continue
+
+            counts[source_id] = counts.get(source_id, 0) + 1
+
+    completed = {
+        source_id
+        for source_id, count in counts.items()
+        if count >= expected_per_id
+    }
+    return completed, counts
+
+
 def generate_synthetic_tools_for_id(context, api_token, base_url, model):
     """Generate exactly two synthetic tools for one normalized tool ID."""
     normalized_id = context["normalized_tool_id"]
@@ -425,15 +468,30 @@ def generate_synthetic_tools_for_id(context, api_token, base_url, model):
     co_tools_summary = [summarize_tool_for_prompt(t) for t in cooccurring_tools]
     co_tools_block = json.dumps(co_tools_summary, ensure_ascii=False, indent=2)
 
-    prompt = f"""You are a tool generation expert. Generate EXACTLY {SYNTHETIC_TOOLS_PER_ID} synthetic tool definitions.
+    prompt = f"""You are generating realistic distractor API tools for WildToolBench. Generate EXACTLY {SYNTHETIC_TOOLS_PER_ID} synthetic tool definitions.
 
-The source tool represents normalized tool ID {normalized_id}. The tool definition shown is its first occurrence, but the task/context information below is aggregated across EVERY source row in which this normalized ID occurs.
+The source tool represents normalized tool ID {normalized_id}. The task/context information below is aggregated across EVERY source row in which this normalized ID occurs.
 
-The synthetic tools must:
-1. Be RELATED to the source tool in the same broad domain/category.
-2. Have NOTICEABLY DIFFERENT purposes/functionality from the source tool and from each other.
-3. NOT be valid solutions for ANY of the benchmark tasks shown below.
-4. Also avoid duplicating the functionality of the other real tools that co-occur with the source tool in those tasks.
+FUNCTIONAL REQUIREMENTS
+1. Stay in the same broad domain/category as the source tool.
+2. Give each synthetic tool a NOTICEABLY DIFFERENT purpose/functionality from the source tool and from the other synthetic tool.
+3. Neither synthetic tool may be a valid solution for ANY benchmark task shown below.
+4. Do not duplicate the functionality of any real co-occurring tool shown below.
+5. Use parameters appropriate to the new functionality rather than merely renaming source parameters.
+
+STYLE REQUIREMENTS -- MATCH WILDTOOLBENCH
+The synthetic tools must look as if they were written by the same API authors as the original WildToolBench tools. Do NOT make the synthetic descriptions more polished, verbose, or explanatory than the real tools.
+
+Follow these style rules strictly:
+- Prefer SHORT, direct API descriptions, usually one sentence.
+- Prefer simple verbs such as "Get", "Retrieve", "Create", "Update", "Delete", "Search", "Check", "Calculate", "List", or "Generate".
+- Avoid marketing/product language and explanatory clauses such as "allowing users to...", "helping users...", "ensuring...", "suitable for...", or long lists of benefits.
+- Do not make descriptions artificially detailed. Match the approximate brevity and plainness of the source and co-occurring WTB tools.
+- Tool names must be realistic camelCase and should resemble the naming conventions of the real tools in this context. Do not make names unusually elegant, long, or descriptive.
+- Parameter descriptions should also be short and API-like. Prefer wording such as "The name of the city.", "The ID of the user.", "The start date, in YYYY-MM-DD format."
+- Reuse the vocabulary, capitalization conventions, abbreviation style, and level of specificity visible in the source/co-occurring tools when appropriate.
+- Preserve normal API messiness if it is present in the examples; do not systematically improve naming or prose.
+- Do not mention benchmarks, distractors, synthetic generation, invalidity, or style matching in any generated field.
 
 Benchmark tasks associated with this source context:
 {task_block}
@@ -445,25 +503,21 @@ Source tool specification:
 - Parameters: {original_param_keys}
 - Required parameters: {original_required}
 
-All unique real tools that co-occur with this source tool across ANY source row in which this normalized ID occurs:
+All unique real tools that co-occur with this source tool across ANY source row in which this normalized ID occurs. Treat these as both FUNCTIONAL EXCLUSIONS and STYLE EXAMPLES:
 {co_tools_block}
 
-IMPORTANT: Generate tools in EXACT JSON format matching tools_en.jsonl structure:
+Return tools in EXACTLY this JSON structure:
 
 {{
   "function": {{
     "name": "syntheticToolName",
-    "description": "Detailed description of what the tool does",
+    "description": "Short WTB-style description of the tool.",
     "parameters": {{
       "type": "object",
       "properties": {{
         "param1": {{
           "type": "string",
-          "description": "Description of param1"
-        }},
-        "param2": {{
-          "type": "string",
-          "description": "Description of param2"
+          "description": "Short WTB-style parameter description."
         }}
       }},
       "required": ["param1"]
@@ -472,15 +526,12 @@ IMPORTANT: Generate tools in EXACT JSON format matching tools_en.jsonl structure
   "type": "function"
 }}
 
-Key Requirements:
-- EXACT COUNT: Return exactly {SYNTHETIC_TOOLS_PER_ID} tool definitions.
-- DIVERSITY: The two synthetic tools must solve different sub-problems from each other.
-- DOMAIN: Stay in the same broad domain/category as "{tool_name}".
-- NON-DUPLICATION: Do not duplicate the source tool or any co-occurring real tool listed above.
-- PARAMETERS: Use parameters appropriate to the new functionality, not merely renamed copies of the source parameters.
-- DESCRIPTION: Describe naturally what each synthetic tool DOES; never mention benchmark tasks or that the tool is synthetic/invalid.
-- NOT A SOLUTION: Neither generated tool may solve any benchmark task listed above.
-- Tool names should be realistic and follow camelCase convention.
+FINAL CHECKS
+- Return exactly {SYNTHETIC_TOOLS_PER_ID} tool definitions.
+- The two tools must solve different sub-problems.
+- Neither tool may solve any listed benchmark task.
+- Neither tool may duplicate the source or a co-occurring real tool.
+- Keep descriptions concise and stylistically similar to the real WTB tools above.
 - Output ONLY valid JSON, with one complete tool definition per line.
 - Do not wrap the response in markdown fences and do not add explanations."""
 
@@ -604,6 +655,23 @@ def main():
     synthetic_output = output_dir / "tools_en_synthetic_candidates.jsonl"
     metadata_output = output_dir / "tools_en_synthetic_metadata.json"
 
+    # Resume by source normalized ID rather than by offset. A source ID is skipped
+    # only if the existing result file already contains the full expected number
+    # of synthetic tools for that ID. Partial IDs are regenerated.
+    completed_ids, existing_counts = load_completed_source_ids(synthetic_output)
+    if completed_ids:
+        print(
+            f"Found {len(completed_ids)} already-complete normalized IDs in "
+            f"{synthetic_output}; these will be skipped"
+        )
+
+    before_resume_filter = len(ids_to_process)
+    ids_to_process = [normalized_id for normalized_id in ids_to_process if normalized_id not in completed_ids]
+    print(
+        f"Missing normalized IDs to generate: {len(ids_to_process)} "
+        f"(skipped {before_resume_filter - len(ids_to_process)} already complete)"
+    )
+
     synthetic_tools_all = []
     metadata_rows = []
 
@@ -613,9 +681,9 @@ def main():
         tasks = context.get("tasks", [])
         co_tools = context.get("cooccurring_tools", [])
 
-        absolute_idx = args.offset + local_idx
+        absolute_idx = local_idx
         print(
-            f"\n[{absolute_idx}/{len(unique_ids)}] normalized_tool_id={normalized_id} "
+            f"\n[{absolute_idx}/{len(ids_to_process)}] normalized_tool_id={normalized_id} "
             f"{tool_name}: generating {SYNTHETIC_TOOLS_PER_ID}"
         )
         print(
@@ -667,19 +735,18 @@ def main():
 
     print("\nWriting outputs...")
 
-    # Preserve the original script's batching behavior: offset > 0 appends the
-    # JSONL candidates.  Metadata is merged into one JSON array.
-    mode = "a" if args.offset > 0 else "w"
-    with open(synthetic_output, mode, encoding="utf-8") as f:
+    # Always append newly generated IDs. Existing completed IDs were filtered
+    # before generation, so reruns do not duplicate complete results.
+    with open(synthetic_output, "a", encoding="utf-8") as f:
         for tool in synthetic_tools_all:
             f.write(json.dumps(tool, ensure_ascii=False) + "\n")
 
     print(
-        f"  Wrote {len(synthetic_tools_all)} synthetic tools to "
-        f"{synthetic_output} (mode={mode})"
+        f"  Appended {len(synthetic_tools_all)} synthetic tools to "
+        f"{synthetic_output}"
     )
 
-    if args.offset > 0 and metadata_output.exists():
+    if metadata_output.exists():
         try:
             with open(metadata_output, "r", encoding="utf-8") as f:
                 existing_metadata = json.load(f)

@@ -249,6 +249,68 @@ class InContextToolSelector(ToolSelector):
         self._load_task_tools_reference()
 
     @staticmethod
+    def _normalize_description(value: Any) -> str:
+        return " ".join(str(value or "").split()).strip().lower()
+
+    def _sanitize_and_dedup_tools(self, tools: list) -> tuple[list, dict]:
+        """Keep only OpenAI tool schema fields and deduplicate by name+description."""
+        private_fields = {"_synthetic", "_source_tool", "sourceTool", "source_tool", "synthetic"}
+        seen_keys = set()
+        sanitized = []
+
+        dropped_invalid = 0
+        dropped_duplicate = 0
+        removed_private_field_count = 0
+
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                dropped_invalid += 1
+                continue
+
+            for key in private_fields:
+                if key in tool:
+                    removed_private_field_count += 1
+
+            func = tool.get("function")
+            if not isinstance(func, dict):
+                dropped_invalid += 1
+                continue
+
+            name = str(func.get("name", "")).strip()
+            desc = str(func.get("description", "")).strip()
+            params = func.get("parameters")
+
+            if not name or not desc or not isinstance(params, dict):
+                dropped_invalid += 1
+                continue
+
+            key = (name, self._normalize_description(desc))
+            if key in seen_keys:
+                dropped_duplicate += 1
+                continue
+            seen_keys.add(key)
+
+            sanitized.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": desc,
+                        "parameters": params,
+                    },
+                }
+            )
+
+        stats = {
+            "input_tools": len(tools or []),
+            "kept_tools": len(sanitized),
+            "dropped_invalid": dropped_invalid,
+            "dropped_duplicate": dropped_duplicate,
+            "removed_private_field_count": removed_private_field_count,
+        }
+        return sanitized, stats
+
+    @staticmethod
     def _normalize_required(required: Any) -> list:
         if isinstance(required, list):
             return [str(item) for item in required]
@@ -390,14 +452,21 @@ class InContextToolSelector(ToolSelector):
         """Load all valid tools from schema cache file."""
         if os.path.exists(self.schema_cache_file):
             try:
-                with open(self.schema_cache_file, 'r') as f:
+                with open(self.schema_cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if isinstance(data, dict) and "tools" in data:
-                        self.tools_cache = data["tools"]
-                        print(f"[IN-CONTEXT SELECTOR] Loaded {len(self.tools_cache)} valid tools from schema cache")
+                        loaded_tools = data["tools"]
                     else:
-                        self.tools_cache = data if isinstance(data, list) else []
-                        print(f"[IN-CONTEXT SELECTOR] Loaded {len(self.tools_cache)} tools from schema cache")
+                        loaded_tools = data if isinstance(data, list) else []
+
+                    self.tools_cache, stats = self._sanitize_and_dedup_tools(loaded_tools)
+                    print(
+                        "[IN-CONTEXT SELECTOR] Loaded tools from schema cache: "
+                        f"input={stats['input_tools']}, kept={stats['kept_tools']}, "
+                        f"dropped_invalid={stats['dropped_invalid']}, "
+                        f"dropped_duplicate={stats['dropped_duplicate']}, "
+                        f"removed_private_fields={stats['removed_private_field_count']}"
+                    )
             except Exception as e:
                 print(f"[WARNING] Failed to load schema cache: {e}")
                 self.tools_cache = []
@@ -466,6 +535,18 @@ class HierarchicalToolSelector(ToolSelector):
         self.endpoint = os.getenv("LANGGRAPH_SELECTOR_LLM_ENDPOINT")
         self.api_key = os.getenv("LANGGRAPH_SELECTOR_LLM_API_KEY")
         self.model = os.getenv("LANGGRAPH_SELECTOR_LLM_MODEL", "Qwen/Qwen3-30B-A3B")
+        self.max_context_tokens = int(os.getenv("LANGGRAPH_SELECTOR_MAX_CONTEXT_TOKENS", "40960"))
+        self.max_output_tokens = int(os.getenv("LANGGRAPH_SELECTOR_MAX_OUTPUT_TOKENS", "400"))
+        self.prompt_headroom_tokens = int(os.getenv("LANGGRAPH_SELECTOR_PROMPT_HEADROOM_TOKENS", "1024"))
+        self.max_conversation_chars = int(os.getenv("LANGGRAPH_SELECTOR_MAX_CONVERSATION_CHARS", "6000"))
+        self.max_tool_desc_chars = int(os.getenv("LANGGRAPH_SELECTOR_MAX_TOOL_DESC_CHARS", "180"))
+        # Controls what conversation context is included in selector prompt:
+        # - latest_user: only latest user message (default)
+        # - full: bounded full history
+        # - none: no conversation context
+        self.selector_context_mode = (
+            os.getenv("LANGGRAPH_SELECTOR_CONTEXT_MODE", "latest_user") or "latest_user"
+        ).strip().lower()
         self.last_selection_metrics = {}
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
@@ -481,11 +562,31 @@ class HierarchicalToolSelector(ToolSelector):
                 with open(self.schema_cache_file, 'r') as f:
                     data = json.load(f)
                     if isinstance(data, dict) and "tools" in data:
-                        self.tools_cache = data["tools"]
-                        print(f"[HIERARCHICAL SELECTOR] Loaded {len(self.tools_cache)} valid tools from schema cache")
+                        loaded_tools = data["tools"]
                     else:
-                        self.tools_cache = data if isinstance(data, list) else []
-                        print(f"[HIERARCHICAL SELECTOR] Loaded {len(self.tools_cache)} tools from schema cache")
+                        loaded_tools = data if isinstance(data, list) else []
+
+                    # Deduplicate by normalized name + description to reduce
+                    # prompt bloat without removing distinct tool semantics.
+                    seen_keys = set()
+                    deduped_tools = []
+                    duplicates = 0
+                    for tool in loaded_tools:
+                        func = tool.get("function", {}) if isinstance(tool, dict) else {}
+                        name = str(func.get("name", "")).strip()
+                        desc = " ".join(str(func.get("description", "")).split()).strip().lower()
+                        key = (name, desc)
+                        if key in seen_keys:
+                            duplicates += 1
+                            continue
+                        seen_keys.add(key)
+                        deduped_tools.append(tool)
+
+                    self.tools_cache = deduped_tools
+                    print(
+                        f"[HIERARCHICAL SELECTOR] Loaded {len(loaded_tools)} tools from schema cache, "
+                        f"deduplicated to {len(self.tools_cache)} (removed {duplicates})"
+                    )
             except Exception as e:
                 print(f"[WARNING] Failed to load schema cache: {e}")
                 self.tools_cache = []
@@ -493,10 +594,21 @@ class HierarchicalToolSelector(ToolSelector):
             print(f"[WARNING] Schema cache file not found: {self.schema_cache_file}")
             self.tools_cache = []
     
-    def _serialize_messages_for_selector(self, messages: list) -> str:
-        """Render the full conversation history for the selector prompt."""
+    def _estimate_tokens(self, text: str) -> int:
+        """Rough token estimate (safe over-approximation for Latin text)."""
+        return max(1, (len(text) + 3) // 4)
+
+    def _prompt_token_budget(self) -> int:
+        budget = self.max_context_tokens - self.max_output_tokens - self.prompt_headroom_tokens
+        return max(1024, budget)
+
+    def _serialize_messages_for_selector(self, messages: list, char_budget: int = None) -> str:
+        """Render conversation history with size limits to avoid context overflow."""
+        if char_budget is None:
+            char_budget = self.max_conversation_chars
+
         rendered = []
-        for idx, msg in enumerate(messages, start=1):
+        for msg in messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if isinstance(content, list):
@@ -506,23 +618,177 @@ class HierarchicalToolSelector(ToolSelector):
             content = content.strip()
             if not content:
                 continue
-            rendered.append(f"{idx}. {role}: {content}")
-        return "\n".join(rendered) if rendered else "(no conversation history)"
+            rendered.append((role, content))
 
-    def _build_selector_prompt(self, messages: list, tools: list) -> str:
-        """Build a prompt that includes the full conversation history for tool selection."""
-        tool_descriptions = self._format_tools(tools)
-        conversation_history = self._serialize_messages_for_selector(messages)
-        return f"""Given the conversation so far, select the most relevant tools from the available list. /no_think
+        if not rendered:
+            return "(no conversation history)"
 
-Conversation History:
-{conversation_history}
+        # Keep newest turns first under a char budget since latest user turns are
+        # usually the strongest signal for tool relevance.
+        kept = []
+        used_chars = 0
+        for role, content in reversed(rendered):
+            item = f"{role}: {content}"
+            item_len = len(item) + 8
+            if kept and used_chars + item_len > char_budget:
+                break
+            kept.append((role, content))
+            used_chars += item_len
 
-Available Tools:
-{tool_descriptions}
+        kept.reverse()
+        lines = []
+        for idx, (role, content) in enumerate(kept, start=1):
+            lines.append(f"{idx}. {role}: {content}")
+        return "\n".join(lines)
 
-Return a JSON array of at most 10 tool names that are most relevant, e.g. ["getTool1", "getTool2"].
-Return ONLY the JSON array, no other text."""
+    def _latest_user_message(self, messages: list) -> str:
+        """Return latest user message for compact selector context."""
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = json.dumps(content, ensure_ascii=False)
+            elif not isinstance(content, str):
+                content = str(content)
+            content = content.strip()
+            if content:
+                return f"1. user: {content}"
+        return "(no user message)"
+
+    def _selector_context_text(self, messages: list, char_budget: int) -> str:
+        """Build selector context according to configured context mode."""
+        mode = self.selector_context_mode
+        if mode == "none":
+            return "(no conversation context)"
+        if mode == "latest_user":
+            return self._latest_user_message(messages)
+        return self._serialize_messages_for_selector(messages, char_budget)
+
+    def _build_selector_prompt(self, messages: list, tools: list) -> tuple[str, int]:
+        """Build selector prompt while keeping full tool list and trimming only history."""
+        base_conversation_budget = self.max_conversation_chars
+        prompt_header = (
+            "Given the conversation so far, select the most relevant tools from the available list. /no_think\n\n"
+            "Conversation History:\n"
+            "{conversation_history}\n\n"
+            "Available Tools (full list):\n"
+        )
+        prompt_footer = (
+            "\n\nReturn a JSON array of at most 10 objects with BOTH name and description, "
+            "e.g. [{\"name\": \"getTool1\", \"description\": \"...\"}].\n"
+            "For each selected tool, copy the description text from the list verbatim.\n"
+            "If multiple tools share the same name, the description is mandatory for disambiguation.\n"
+            "Return ONLY the JSON array, no other text."
+        )
+
+        tool_text = self._format_tools(tools)
+        token_budget = self._prompt_token_budget()
+
+        # Keep the full tool list and full descriptions. Only reduce conversation history.
+        attempted_budget = base_conversation_budget
+        conversation_history = self._selector_context_text(messages, attempted_budget)
+        final_prompt = (prompt_header.format(conversation_history=conversation_history) + tool_text + prompt_footer)
+        est_tokens = self._estimate_tokens(final_prompt)
+        while est_tokens > token_budget and attempted_budget > 0 and self.selector_context_mode == "full":
+            attempted_budget = max(0, attempted_budget // 2)
+            conversation_history = self._selector_context_text(messages, attempted_budget)
+            final_prompt = (prompt_header.format(conversation_history=conversation_history) + tool_text + prompt_footer)
+            est_tokens = self._estimate_tokens(final_prompt)
+
+        tools_in_prompt = len(tools)
+        print(
+            f"[HIERARCHICAL SELECTOR] prompt_est_tokens={est_tokens}, "
+            f"budget={token_budget}, tools_in_prompt={tools_in_prompt}/{tools_in_prompt}, "
+            f"conversation_chars_budget={attempted_budget}, context_mode={self.selector_context_mode}"
+        )
+        return final_prompt, attempted_budget
+
+    def _normalize_text(self, value: str) -> str:
+        """Normalize text for robust selector-output matching."""
+        return " ".join(str(value or "").split()).strip().lower()
+
+    def _parse_selector_output(self, raw_response: str) -> tuple[list[dict], list[str]]:
+        """Parse selector output into a normalized list of tool specs."""
+        import re as _re
+
+        clean = _re.sub(r"<think>.*?</think>", "", raw_response, flags=_re.DOTALL).strip()
+        m = _re.search(r"\[.*?\]", clean, _re.DOTALL)
+        if not m:
+            print(f"[WARNING] Selector LLM returned no JSON array; got: {clean[:200]}")
+            return [], []
+
+        parsed = json.loads(m.group())
+        if not isinstance(parsed, list):
+            return [], []
+
+        specs = []
+        names = []
+        for item in parsed:
+            if isinstance(item, str):
+                name = item.strip()
+                if not name:
+                    continue
+                specs.append({"name": name, "description": ""})
+                names.append(name)
+                continue
+
+            if not isinstance(item, dict):
+                continue
+
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            description = str(item.get("description", "")).strip()
+            specs.append({"name": name, "description": description})
+            names.append(name)
+
+        return specs, names
+
+    def _match_selected_tools(self, all_tools: list, selected_specs: list[dict]) -> list:
+        """Match selector specs to tools, preferring description-aware disambiguation."""
+        selected = []
+        seen = set()
+
+        for spec in selected_specs[:10]:
+            name = str(spec.get("name", "")).strip()
+            desc_hint = self._normalize_text(spec.get("description", ""))
+            if not name:
+                continue
+
+            candidates = [
+                t for t in all_tools
+                if str(t.get("function", {}).get("name", "")).strip() == name
+            ]
+            if not candidates:
+                continue
+
+            best = candidates[0]
+            if desc_hint:
+                scored = []
+                for tool in candidates:
+                    desc = self._normalize_text(tool.get("function", {}).get("description", ""))
+                    score = 0
+                    if desc == desc_hint:
+                        score = 4
+                    elif desc.startswith(desc_hint) or desc_hint.startswith(desc):
+                        score = 3
+                    elif desc_hint in desc:
+                        score = 2
+                    scored.append((score, len(desc), tool))
+                scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                best = scored[0][2]
+
+            key = (
+                str(best.get("function", {}).get("name", "")).strip(),
+                self._normalize_text(best.get("function", {}).get("description", "")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(best)
+
+        return selected
 
     def select(self, messages: list, tools: list) -> list:
         """Use a small LLM to select relevant tools from all 618 valid tools."""
@@ -536,7 +802,7 @@ Return ONLY the JSON array, no other text."""
             return []
         
         query = self._extract_query(messages)
-        selection_prompt = self._build_selector_prompt(messages, all_tools)
+        selection_prompt, used_conversation_budget = self._build_selector_prompt(messages, all_tools)
         
         response, selector_usage, selector_latency = self._invoke_selector_llm(selection_prompt)
         selector_input_tokens = int(selector_usage.get("prompt_tokens", 0) or 0)
@@ -545,20 +811,10 @@ Return ONLY the JSON array, no other text."""
             "selector_input_tokens": selector_input_tokens,
             "selector_output_tokens": selector_output_tokens,
             "selector_total_tokens": selector_input_tokens + selector_output_tokens,
+            "selector_conversation_chars_budget": used_conversation_budget,
         }
-        # Strip <think>...</think> blocks produced by reasoning models (e.g. Qwen3)
-        import re as _re
-        clean = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL).strip()
-        # Extract the first JSON array found in the remaining text
-        m = _re.search(r"\[.*?\]", clean, _re.DOTALL)
-        if not m:
-            print(f"[WARNING] Selector LLM returned no JSON array; got: {clean[:200]}")
-            selected_names = []
-        else:
-            selected_names = json.loads(m.group())
-        
-        # Filter tools by selected names
-        selected = [t for t in all_tools if t.get("function", {}).get("name") in selected_names]
+        selected_specs, selected_names = self._parse_selector_output(response)
+        selected = self._match_selected_tools(all_tools, selected_specs)
         
         # Log tool selection
         log_tool_selection(
@@ -569,9 +825,11 @@ Return ONLY the JSON array, no other text."""
             selection_metadata={
                 "model": self.model,
                 "selected_tool_names": selected_names,
+                "selected_tool_specs": selected_specs,
                 "selector_input_tokens": selector_input_tokens,
                 "selector_output_tokens": selector_output_tokens,
                 "selector_latency_s": selector_latency,
+                "selector_conversation_chars_budget": used_conversation_budget,
             }
         )
         
@@ -600,12 +858,14 @@ Return ONLY the JSON array, no other text."""
         return ""
     
     def _format_tools(self, tools: list) -> str:
-        """Format tools for the selector LLM."""
+        """Format full tool list for the selector LLM with compact descriptions."""
         lines = []
         for tool in tools:
             func = tool.get("function", {})
             name = func.get("name", "unknown")
-            desc = func.get("description", "")
+            desc = (func.get("description", "") or "").strip().replace("\n", " ")
+            if self.max_tool_desc_chars > 0 and len(desc) > self.max_tool_desc_chars:
+                desc = desc[: self.max_tool_desc_chars - 3].rstrip() + "..."
             lines.append(f"- {name}: {desc}")
         return "\n".join(lines)
     
@@ -621,7 +881,7 @@ Return ONLY the JSON array, no other text."""
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
             "top_p": 1.0,
-            "max_tokens": 400,
+            "max_tokens": self.max_output_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }
         

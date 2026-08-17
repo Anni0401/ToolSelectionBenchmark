@@ -86,18 +86,29 @@ def find_tools_file(relative_path: str) -> str:
 
 
 def load_tools(file_path: str) -> list:
-    """Load tools from JSONL file.
-    
-    Supports both formats:
-    - One tool object per line: {"function": {...}, "type": "function"}
-    - Multiple tools per line (as array): [{"function": {...}}, {"function": {...}}]
+    """Load tools from either JSONL or schema-cache JSON.
+
+    Supports:
+    - JSONL tools file with one tool object per line or arrays per line
+    - Schema cache JSON with a top-level 'tools' list
     """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Tools file not found: {file_path}")
+
+    if file_path.endswith('.json'):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get('tools'), list):
+                return data['tools']
+            if isinstance(data, list):
+                return data
+            return [data]
+
     tools = []
-    with open(file_path, 'r') as f:
+    with open(file_path, 'r', encoding='utf-8') as f:
         for line in f:
             if line.strip():
                 data = json.loads(line)
-                # If it's a list, extend; if it's a single tool, append
                 if isinstance(data, list):
                     tools.extend(data)
                 else:
@@ -121,8 +132,8 @@ def main():
     parser.add_argument(
         "--tools-file",
         type=str,
-        default="multi-agent-framework/tools/tools_en.jsonl",
-        help="Path to the tools JSONL file (default: multi-agent-framework/tools/tools_en.jsonl)"
+        default="wild-tool-bench/wtb/model_handler/api_inference/tool_schemas_cache.json",
+        help="Path to the tools input file; accepts either a JSONL tools file or a schema cache JSON with a 'tools' field"
     )
     parser.add_argument(
         "--cache-file",

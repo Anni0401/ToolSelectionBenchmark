@@ -226,301 +226,398 @@ class ToolSelector(ABC):
 
 
 class InContextToolSelector(ToolSelector):
-    """Strategy 1: In-context selection by the executing LLM.
-    
-    Returns all 618 valid tools from schema cache - the LLM decides which to use in-context.
     """
-    
+    In-context baseline:
+
+    Pass to the executor:
+      1. exactly the tools supplied by WTB for the current task
+      2. all synthetic distractor tools stored in tool_schemas_cache.jsonl
+
+    The WTB request tools are the source of truth for the real task tools,
+    including their task-specific `required` fields.
+
+    The schema cache is assumed to contain ONLY the filtered synthetic tools.
+    """
+
     def __init__(self, schema_cache_file: str = None):
-        self.schema_cache_file = schema_cache_file or os.getenv("LANGGRAPH_TOOL_SCHEMAS_CACHE_FILE") or os.path.join(
-            os.path.dirname(__file__),
-            "tool_schemas_cache.json"
-        )
-        self.tools_en_file = os.getenv("LANGGRAPH_TOOLS_EN_FILE") or os.path.abspath(
-            os.path.join(
+        self.schema_cache_file = (
+            schema_cache_file
+            or os.getenv("LANGGRAPH_TOOL_SCHEMAS_CACHE_FILE")
+            or os.path.join(
                 os.path.dirname(__file__),
-                "../../../../multi-agent-framework/tools/tools_en.jsonl",
+                "tool_schemas_cache.jsonl",
             )
         )
-        self.tools_cache = None
-        self.task_tools_by_index = []
-        self.task_tools_by_benchmark_id = {}
-        self._load_schema_cache()
-        self._load_task_tools_reference()
+
+        self.synthetic_tools = []
+        self._load_synthetic_tools()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _normalize_description(value: Any) -> str:
         return " ".join(str(value or "").split()).strip().lower()
 
-    def _sanitize_and_dedup_tools(self, tools: list) -> tuple[list, dict]:
-        """Keep only OpenAI tool schema fields and deduplicate by name+description."""
-        private_fields = {"_synthetic", "_source_tool", "sourceTool", "source_tool", "synthetic"}
-        seen_keys = set()
-        sanitized = []
+    @staticmethod
+    def _sanitize_tool(tool: dict) -> Optional[dict]:
+        """
+        Convert a tool to the standard OpenAI function-tool schema.
 
-        dropped_invalid = 0
-        dropped_duplicate = 0
-        removed_private_field_count = 0
+        Private benchmark metadata such as `_synthetic` and `_source_tool`
+        is intentionally not forwarded to the executor.
+        """
+        if not isinstance(tool, dict):
+            return None
 
-        for tool in tools or []:
-            if not isinstance(tool, dict):
-                dropped_invalid += 1
-                continue
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return None
 
-            for key in private_fields:
-                if key in tool:
-                    removed_private_field_count += 1
+        name = str(func.get("name", "")).strip()
+        description = str(func.get("description", "")).strip()
+        parameters = func.get("parameters")
 
-            func = tool.get("function")
-            if not isinstance(func, dict):
-                dropped_invalid += 1
-                continue
+        if not name or not description or not isinstance(parameters, dict):
+            return None
 
-            name = str(func.get("name", "")).strip()
-            desc = str(func.get("description", "")).strip()
-            params = func.get("parameters")
-
-            if not name or not desc or not isinstance(params, dict):
-                dropped_invalid += 1
-                continue
-
-            key = (name, self._normalize_description(desc))
-            if key in seen_keys:
-                dropped_duplicate += 1
-                continue
-            seen_keys.add(key)
-
-            sanitized.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": desc,
-                        "parameters": params,
-                    },
-                }
-            )
-
-        stats = {
-            "input_tools": len(tools or []),
-            "kept_tools": len(sanitized),
-            "dropped_invalid": dropped_invalid,
-            "dropped_duplicate": dropped_duplicate,
-            "removed_private_field_count": removed_private_field_count,
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": copy.deepcopy(parameters),
+            },
         }
-        return sanitized, stats
 
     @staticmethod
-    def _normalize_required(required: Any) -> list:
-        if isinstance(required, list):
-            return [str(item) for item in required]
-        return []
+    def _full_tool_signature(tool: dict) -> tuple:
+        """
+        Full schema identity.
 
-    @staticmethod
-    def _tool_signature(tool: dict) -> tuple:
+        This is used only for exact duplicate detection. Unlike the old
+        name+description deduplication, tools with genuinely different
+        parameter schemas are NOT collapsed.
+        """
         func = tool.get("function", {}) if isinstance(tool, dict) else {}
-        params = func.get("parameters", {}) if isinstance(func, dict) else {}
-        props = params.get("properties", {}) if isinstance(params, dict) else {}
-        param_names = tuple(sorted(props.keys())) if isinstance(props, dict) else tuple()
-        return (func.get("name"), param_names)
+
+        name = str(func.get("name", "")).strip()
+
+        description = " ".join(
+            str(func.get("description", "")).split()
+        ).strip().lower()
+
+        parameters = json.dumps(
+            func.get("parameters", {}),
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+        return name, description, parameters
 
     @staticmethod
-    def _extract_tools_from_jsonl_entry(entry: Any) -> list:
-        if isinstance(entry, list):
-            return entry
-        if isinstance(entry, dict):
-            for key in ("tools", "tool_schemas", "available_tools"):
-                value = entry.get(key)
-                if isinstance(value, list):
-                    return value
+    def _extract_tools_from_object(obj: Any) -> list:
+        """
+        Accept several convenient JSON/JSONL representations.
+
+        A JSONL line may be:
+          - one tool object
+          - a list of tools
+          - {"tools": [...]}
+          - {"tool_schemas": [...]}
+          - {"available_tools": [...]}
+        """
+        if isinstance(obj, list):
+            return obj
+
+        if not isinstance(obj, dict):
+            return []
+
+        # A single OpenAI tool object.
+        if isinstance(obj.get("function"), dict):
+            return [obj]
+
+        for key in ("tools", "tool_schemas", "available_tools"):
+            value = obj.get(key)
+            if isinstance(value, list):
+                return value
+
         return []
 
-    @staticmethod
-    def _to_int_or_none(value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except Exception:
-            return None
+    # ------------------------------------------------------------------
+    # Synthetic cache loading
+    # ------------------------------------------------------------------
 
-    def _load_task_tools_reference(self):
-        """Load per-task tools from tools_en.jsonl to recover task-specific required fields."""
-        if not os.path.exists(self.tools_en_file):
-            print(f"[WARNING] tools_en reference file not found: {self.tools_en_file}")
+    def _load_synthetic_tools(self):
+        """
+        Load ONLY synthetic distractor tools from tool_schemas_cache.jsonl.
+
+        Supports both:
+          - proper JSONL: one JSON object/list per line
+          - legacy JSON: {"tools": [...]} or [...]
+        """
+        if not os.path.exists(self.schema_cache_file):
+            print(
+                f"[WARNING] Synthetic schema cache not found: "
+                f"{self.schema_cache_file}"
+            )
+            self.synthetic_tools = []
             return
 
+        loaded_tools = []
+
         try:
-            with open(self.tools_en_file, "r", encoding="utf-8") as f:
-                for _, line in enumerate(f):
-                    line = line.strip()
-                    if not line:
-                        continue
+            # ----------------------------------------------------------
+            # First try ordinary JSON.
+            # This keeps compatibility if the file is actually a JSON
+            # document despite using a .jsonl extension.
+            # ----------------------------------------------------------
+            try:
+                with open(
+                    self.schema_cache_file,
+                    "r",
+                    encoding="utf-8",
+                ) as f:
+                    data = json.load(f)
 
-                    try:
-                        entry = json.loads(line)
-                    except Exception:
-                        continue
+                loaded_tools.extend(
+                    self._extract_tools_from_object(data)
+                )
 
-                    entry_tools = self._extract_tools_from_jsonl_entry(entry)
-                    self.task_tools_by_index.append(entry_tools)
+            except json.JSONDecodeError:
+                # ------------------------------------------------------
+                # Otherwise parse as true JSONL.
+                # ------------------------------------------------------
+                with open(
+                    self.schema_cache_file,
+                    "r",
+                    encoding="utf-8",
+                ) as f:
+                    for line_no, line in enumerate(f, start=1):
+                        line = line.strip()
 
-                    if isinstance(entry, dict):
-                        benchmark_task_id = entry.get("benchmark_task_id")
-                        if benchmark_task_id is None:
-                            benchmark_task_id = entry.get("benchmark_task")
-                        benchmark_task_id = self._to_int_or_none(benchmark_task_id)
-                        if benchmark_task_id is not None:
-                            self.task_tools_by_benchmark_id[benchmark_task_id] = entry_tools
+                        if not line:
+                            continue
+
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            print(
+                                f"[WARNING] Invalid JSON in synthetic "
+                                f"tool cache line {line_no}: {exc}"
+                            )
+                            continue
+
+                        loaded_tools.extend(
+                            self._extract_tools_from_object(entry)
+                        )
+
+            # ----------------------------------------------------------
+            # Sanitize + remove only EXACT duplicates.
+            # ----------------------------------------------------------
+            sanitized = []
+            seen = set()
+
+            dropped_invalid = 0
+            dropped_exact_duplicate = 0
+
+            for tool in loaded_tools:
+                clean_tool = self._sanitize_tool(tool)
+
+                if clean_tool is None:
+                    dropped_invalid += 1
+                    continue
+
+                signature = self._full_tool_signature(clean_tool)
+
+                if signature in seen:
+                    dropped_exact_duplicate += 1
+                    continue
+
+                seen.add(signature)
+                sanitized.append(clean_tool)
+
+            self.synthetic_tools = sanitized
 
             print(
-                f"[IN-CONTEXT SELECTOR] Loaded task-tool reference rows: {len(self.task_tools_by_index)} "
-                f"from {os.path.basename(self.tools_en_file)}"
+                "[IN-CONTEXT SELECTOR] Loaded synthetic distractor cache:"
             )
-        except Exception as e:
-            print(f"[WARNING] Failed to load tools_en reference file: {e}")
+            print(f"  Raw tools: {len(loaded_tools)}")
+            print(f"  Valid synthetic tools: {len(self.synthetic_tools)}")
+            print(f"  Invalid dropped: {dropped_invalid}")
+            print(
+                f"  Exact duplicates dropped: "
+                f"{dropped_exact_duplicate}"
+            )
 
-    def _get_task_tools_for_request(self, request_tools: list) -> tuple[list, Optional[int], Optional[int], int]:
-        """Resolve task tools by benchmark_task_id/task_idx with robust index fallback."""
-        benchmark_task_id = self._to_int_or_none(getattr(_request_context, "benchmark_task_id", None))
-        task_idx = self._to_int_or_none(getattr(_request_context, "task_idx", None))
+        except Exception as exc:
+            print(
+                f"[WARNING] Failed to load synthetic tool cache "
+                f"{self.schema_cache_file}: {exc}"
+            )
+            self.synthetic_tools = []
 
-        if benchmark_task_id is not None and benchmark_task_id in self.task_tools_by_benchmark_id:
-            return self.task_tools_by_benchmark_id[benchmark_task_id], benchmark_task_id, None, 0
+    # ------------------------------------------------------------------
+    # Selection
+    # ------------------------------------------------------------------
 
-        if task_idx is None or not self.task_tools_by_index:
-            return [], benchmark_task_id, task_idx, 0
-
-        candidate_indices = []
-        if 0 <= task_idx < len(self.task_tools_by_index):
-            candidate_indices.append(task_idx)
-        if task_idx > 0 and 0 <= task_idx - 1 < len(self.task_tools_by_index):
-            candidate_indices.append(task_idx - 1)
-
-        if not candidate_indices:
-            return [], benchmark_task_id, task_idx, 0
-
-        # If task_idx indexing convention is unclear, choose the candidate line
-        # that best matches the incoming request tools.
-        request_signatures = {self._tool_signature(t) for t in (request_tools or [])}
-        best_idx = candidate_indices[0]
-        best_score = -1
-        for idx in candidate_indices:
-            candidate_signatures = {self._tool_signature(t) for t in self.task_tools_by_index[idx]}
-            score = len(candidate_signatures.intersection(request_signatures)) if request_signatures else 0
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-
-        return self.task_tools_by_index[best_idx], benchmark_task_id, task_idx, best_score
-
-    def _apply_required_overrides_for_task(self, all_tools: list, task_tools: list) -> tuple[list, int]:
-        """Override required fields for tools matching by name + parameter names."""
-        if not all_tools or not task_tools:
-            return all_tools, 0
-
-        task_required_by_signature = {}
-        for task_tool in task_tools:
-            signature = self._tool_signature(task_tool)
-            if not signature[0]:
-                continue
-            params = task_tool.get("function", {}).get("parameters", {})
-            task_required_by_signature[signature] = self._normalize_required(params.get("required"))
-
-        if not task_required_by_signature:
-            return all_tools, 0
-
-        adjusted_tools = []
-        overrides_count = 0
-
-        for tool in all_tools:
-            signature = self._tool_signature(tool)
-            if signature in task_required_by_signature:
-                required = task_required_by_signature[signature]
-                tool_copy = copy.deepcopy(tool)
-                tool_copy.setdefault("function", {})
-                tool_copy["function"].setdefault("parameters", {})
-                tool_copy["function"]["parameters"]["required"] = required
-                adjusted_tools.append(tool_copy)
-                overrides_count += 1
-            else:
-                adjusted_tools.append(tool)
-
-        return adjusted_tools, overrides_count
-    
-    def _load_schema_cache(self):
-        """Load all valid tools from schema cache file."""
-        if os.path.exists(self.schema_cache_file):
-            try:
-                with open(self.schema_cache_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and "tools" in data:
-                        loaded_tools = data["tools"]
-                    else:
-                        loaded_tools = data if isinstance(data, list) else []
-
-                    self.tools_cache, stats = self._sanitize_and_dedup_tools(loaded_tools)
-                    print(
-                        "[IN-CONTEXT SELECTOR] Loaded tools from schema cache: "
-                        f"input={stats['input_tools']}, kept={stats['kept_tools']}, "
-                        f"dropped_invalid={stats['dropped_invalid']}, "
-                        f"dropped_duplicate={stats['dropped_duplicate']}, "
-                        f"removed_private_fields={stats['removed_private_field_count']}"
-                    )
-            except Exception as e:
-                print(f"[WARNING] Failed to load schema cache: {e}")
-                self.tools_cache = []
-        else:
-            print(f"[WARNING] Schema cache file not found: {self.schema_cache_file}")
-            self.tools_cache = []
-    
     def select(self, messages: list, tools: list) -> list:
-        """Return all valid tools from schema cache for in-context selection."""
-        # Use schema cache tools instead of request tools
-        all_tools = self.tools_cache if self.tools_cache else tools
-        task_tools, benchmark_task_id, task_idx, match_score = self._get_task_tools_for_request(tools)
-        selected_tools, overrides_count = self._apply_required_overrides_for_task(all_tools, task_tools)
-        
-        # Extract query for logging
+        """
+        Return:
+
+            task-specific WTB tools
+            +
+            filtered synthetic distractors
+
+        The incoming WTB tools are preserved exactly, including their
+        task-specific required fields.
+        """
+
+        # --------------------------------------------------------------
+        # 1. Keep the task tools supplied by WTB.
+        #
+        # Do NOT replace them with global-cache versions and do NOT
+        # overwrite their `required` fields.
+        # --------------------------------------------------------------
+        task_tools = []
+
+        for tool in tools or []:
+            clean_tool = self._sanitize_tool(tool)
+
+            if clean_tool is not None:
+                task_tools.append(clean_tool)
+
+        # --------------------------------------------------------------
+        # 2. Task tool names must win over synthetic tool names.
+        #
+        # Tool calls identify functions by NAME. If a synthetic tool has
+        # exactly the same function name as a real task tool, the executor
+        # cannot unambiguously distinguish them when it returns:
+        #
+        #     {"name": "..."}
+        #
+        # Therefore skip synthetic name collisions for this task.
+        # --------------------------------------------------------------
+        task_tool_names = {
+            tool.get("function", {}).get("name")
+            for tool in task_tools
+        }
+
+        selected_tools = list(task_tools)
+
+        skipped_name_collision = 0
+        skipped_exact_duplicate = 0
+
+        # Exact signatures already represented by real task tools.
+        seen_signatures = {
+            self._full_tool_signature(tool)
+            for tool in task_tools
+        }
+
+        for synthetic_tool in self.synthetic_tools:
+            synthetic_name = (
+                synthetic_tool
+                .get("function", {})
+                .get("name")
+            )
+
+            # Real task tool always has priority.
+            if synthetic_name in task_tool_names:
+                skipped_name_collision += 1
+                continue
+
+            signature = self._full_tool_signature(synthetic_tool)
+
+            if signature in seen_signatures:
+                skipped_exact_duplicate += 1
+                continue
+
+            seen_signatures.add(signature)
+            selected_tools.append(
+                copy.deepcopy(synthetic_tool)
+            )
+
+        # --------------------------------------------------------------
+        # 3. Query only for logging.
+        # --------------------------------------------------------------
         query = ""
+
         for msg in reversed(messages):
             if msg.get("role") == "user":
-                query = msg.get("content", "")[:500]
+                content = msg.get("content", "")
+
+                if isinstance(content, str):
+                    query = content[:500]
+
                 break
-        
-        # Log tool selection
+
+        # --------------------------------------------------------------
+        # 4. Log exactly what is being sent to the executor.
+        # --------------------------------------------------------------
         log_tool_selection(
             strategy_name="in_context",
             query=query,
             available_tools_count=len(selected_tools),
             selected_tools=selected_tools,
             selection_metadata={
-                "method": "pass_through_with_required_override",
-                "required_overrides": overrides_count,
-                "benchmark_task_id": benchmark_task_id,
-                "task_idx": task_idx,
-                "task_row_match_score": match_score,
-            }
+                "method": "wtb_task_tools_plus_synthetic_distractors",
+                "wtb_task_tools": len(task_tools),
+                "synthetic_cache_tools": len(self.synthetic_tools),
+                "synthetic_tools_added": (
+                    len(selected_tools) - len(task_tools)
+                ),
+                "synthetic_name_collisions_skipped": (
+                    skipped_name_collision
+                ),
+                "exact_duplicates_skipped": (
+                    skipped_exact_duplicate
+                ),
+            },
         )
-        
-        print(f"\n[IN-CONTEXT SELECTOR]")
-        print(f"  Total available tools: {len(selected_tools)}")
-        print(f"  Required overrides applied: {overrides_count}")
-        if benchmark_task_id is not None:
-            print(f"  benchmark_task_id: {benchmark_task_id}")
-        if task_idx is not None:
-            print(f"  task_idx: {task_idx} (row match score: {match_score})")
-        print(f"  Passing all {len(selected_tools)} tools to LLM for in-context selection")
-        if len(selected_tools) <= 5:
-            for tool in selected_tools:
-                tool_name = tool.get("function", {}).get("name", "unknown")
-                print(f"    - {tool_name}")
-        else:
-            for tool in selected_tools[:5]:
-                tool_name = tool.get("function", {}).get("name", "unknown")
-                print(f"    - {tool_name}")
-            print(f"    ... and {len(selected_tools) - 5} more")
+
+        # --------------------------------------------------------------
+        # 5. Console diagnostics.
+        # --------------------------------------------------------------
+        print("\n[IN-CONTEXT SELECTOR]")
+        print(
+            f"  WTB task-specific tools: "
+            f"{len(task_tools)}"
+        )
+        print(
+            f"  Synthetic tools in cache: "
+            f"{len(self.synthetic_tools)}"
+        )
+        print(
+            f"  Synthetic name collisions skipped: "
+            f"{skipped_name_collision}"
+        )
+        print(
+            f"  Exact duplicates skipped: "
+            f"{skipped_exact_duplicate}"
+        )
+        print(
+            f"  Synthetic distractors added: "
+            f"{len(selected_tools) - len(task_tools)}"
+        )
+        print(
+            f"  TOTAL tools sent to executor: "
+            f"{len(selected_tools)}"
+        )
+
+        print("  Task tools:")
+
+        for tool in task_tools:
+            name = (
+                tool
+                .get("function", {})
+                .get("name", "unknown")
+            )
+            print(f"    [WTB] {name}")
+
         print()
+
         return selected_tools
 
 

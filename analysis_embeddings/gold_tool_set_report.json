@@ -1,9 +1,11 @@
 {
-  "original_before_dedup": 1248,
-  "synthetic_before_dedup": 1527,
-  "original_after_dedup": 618,
-  "synthetic_after_dedup": 1324,
+  "total_original_before": 733,
+  "total_synthetic_before": 1391,
+  "rule2_exact_name_match": 30,
+  "rule3_high_sim_unrelated_original": 72,
+  "rule4_high_sim_synthetic_pairs": 43,
+  "total_removed": 145,
   "final_original_count": 618,
-  "final_synthetic_count": 1065,
-  "final_total_count": 1683
+  "final_synthetic_count": 983,
+  "final_total_count": 1601
 }

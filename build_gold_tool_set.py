@@ -109,7 +109,6 @@ def cosine_similarity(vec1, vec2):
 def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_dir="analysis_embeddings"):
     """
     Apply filtering rules:
-    1. Cap synthetic tools to at most 2 per source normalized_tool_id (keep first occurrences)
     2. Remove synthetic tools with exact name match to originals
     3. Remove synthetic tools >0.75 similar to unrelated originals
     4. Remove synthetic tool pairs >0.9 similar from different parents
@@ -125,19 +124,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
     
     print(f"Starting with {len(originals)} originals and {len(synthetics)} synthetics")
     
-    # Rule 1: Cap synthetics to at most 2 per source normalized_tool_id (keep first occurrences)
-    max_synthetics_per_id = 2
-    per_id_counts = defaultdict(int)
-    rule1_cap_removals = set()
-    for synth_name, synth_tool in synth_map.items():
-        parent_id = get_synthetic_parent_id(synth_tool)
-        per_id_counts[parent_id] += 1
-        if per_id_counts[parent_id] > max_synthetics_per_id:
-            rule1_cap_removals.add(synth_name)
-    
-    print(f"Rule 1 - Capped to {max_synthetics_per_id} synthetics per source ID: {len(rule1_cap_removals)}")
-    for name in rule1_cap_removals:
-        synth_map.pop(name, None)
+
     
     # Rule 2: Remove exact name matches
     exact_matches = set()
@@ -165,7 +152,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
                 'similarity': sim
             })
     
-    # Rule 3: Remove synthetic tools >0.75 similar to unrelated originals
+    # Rule 3: Remove synthetic tools >0.8 similar to unrelated originals
     rule3_removals = set()
     for synth_name in list(synth_map.keys()):
         parent_id = get_synthetic_parent_id(synth_map[synth_name])
@@ -176,7 +163,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
         for neighbor in neighbors:
             # Check if it's an original AND not the parent AND >0.75 similar
             neighbor_id = orig_id_by_name.get(neighbor['name'])
-            if neighbor['type'] == 'original' and neighbor_id != parent_id and neighbor['similarity'] > 0.75:
+            if neighbor['type'] == 'original' and neighbor_id != parent_id and neighbor['similarity'] > 0.8:
                 rule3_removals.add(synth_name)
                 break
     
@@ -184,7 +171,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
     for name in rule3_removals:
         del synth_map[name]
     
-    # Rule 4: Remove synthetic tool pairs >0.95 similar from different parents
+    # Rule 4: Remove synthetic tool pairs >0.93 similar from different parents
     rule4_removals = set()
     synth_names_list = list(synth_map.keys())
     
@@ -199,17 +186,16 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
             synth2_name = neighbor['name']
             
             # Check if it's synthetic AND >0.9 similar AND different parents
-            if neighbor['type'] == 'synthetic' and neighbor['similarity'] > 0.95:
+            if neighbor['type'] == 'synthetic' and neighbor['similarity'] > 0.93:
                 synth2_tool = synth_map.get(synth2_name)
                 parent2 = get_synthetic_parent_id(synth2_tool) if synth2_tool else None
                 
-                if parent1 != parent2:
-                    # Remove both
-                    rule4_removals.add(synth1_name)
+                if parent1 != parent2 and synth2_name not in rule4_removals:
+                    # Keep synth1, remove only the duplicate neighbor
                     rule4_removals.add(synth2_name)
                     break
     
-    print(f"Rule 4 - High similarity pairs from different parents (>0.95): {len(rule4_removals)}")
+    print(f"Rule 4 - High similarity pairs from different parents (>0.93): {len(rule4_removals)}")
     for name in rule4_removals:
         synth_map.pop(name, None)
     
@@ -243,11 +229,10 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
     report = {
         'total_original_before': len(originals),
         'total_synthetic_before': len(synthetics),
-        'rule1_capped_per_source_id': len(rule1_cap_removals),
         'rule2_exact_name_match': len(exact_matches),
         'rule3_high_sim_unrelated_original': len(rule3_removals),
         'rule4_high_sim_synthetic_pairs': len(rule4_removals),
-        'total_removed': len(rule1_cap_removals) + len(exact_matches) + len(rule3_removals) + len(rule4_removals),
+        'total_removed':  len(exact_matches) + len(rule3_removals) + len(rule4_removals),
         'final_original_count': len(final_originals),
         'final_synthetic_count': len(final_synthetics),
         'final_total_count': len(final_all),

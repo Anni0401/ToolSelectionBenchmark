@@ -356,33 +356,155 @@ def call_generation_api(prompt, api_token, base_url, model=SAIA_DEFAULT_MODEL, m
         return None
 
 
-def generate_synthetic_tools_for_tool(tool_name, tool_def, neighbors, tasks, api_token, model, num_to_generate=5):
-    """Generate synthetic similar tools for a given tool using LLM"""
+def _parse_generated_tools(response):
+    """
+    Parse either one-JSON-object-per-line output or a JSON array/object.
+    """
+    if not response:
+        return []
+
+    text = response.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    parsed_tools = []
+
+    # First try the whole response as JSON.
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list):
+            parsed_tools.extend(obj)
+        elif isinstance(obj, dict):
+            parsed_tools.append(obj)
+    except json.JSONDecodeError:
+        # Fall back to one complete JSON object per line.
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("```"):
+                continue
+            try:
+                parsed_tools.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    valid = []
+    for tool in parsed_tools:
+        if not isinstance(tool, dict):
+            continue
+        func = tool.get("function")
+        if not isinstance(func, dict) or not func.get("name"):
+            continue
+        tool.setdefault("type", "function")
+        tool.pop("reason", None)
+        valid.append(tool)
+
+    return valid
+
+
+def load_completed_source_ids(path, expected_per_id=SYNTHETIC_TOOLS_PER_ID):
+    """Return source normalized IDs that already have a complete generated set.
+
+    The synthetic result JSONL stores the source ID in ``_source_tool_id``.
+    An ID is treated as complete only when at least ``expected_per_id`` valid
+    synthetic tools are already present. This makes reruns safe after partial
+    failures: incomplete IDs are generated again, complete IDs are skipped.
+    """
+    path = Path(path)
+    if not path.exists():
+        return set(), {}
+
+    counts = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                tool = json.loads(line)
+            except json.JSONDecodeError:
+                print(
+                    f"WARNING: ignoring invalid JSON in existing result line {line_no}: {path}",
+                    file=sys.stderr,
+                )
+                continue
+
+            source_id = tool.get("_source_tool_id") if isinstance(tool, dict) else None
+            try:
+                source_id = int(source_id)
+            except (TypeError, ValueError):
+                continue
+
+            counts[source_id] = counts.get(source_id, 0) + 1
+
+    completed = {
+        source_id
+        for source_id, count in counts.items()
+        if count >= expected_per_id
+    }
+    return completed, counts
+
+
+def generate_synthetic_tools_for_id(context, api_token, base_url, model):
+    """Generate exactly two synthetic tools for one normalized tool ID."""
+    normalized_id = context["normalized_tool_id"]
+    tool_def = context["representative"]
+    tool_name = context["representative_name"]
     description = extract_tool_description(tool_def)
-    neighbor_names = [n['name'] for n in neighbors[:5]]
-    sample_tasks = tasks[:3] if tasks else []
-    
-    # Extract parameter structure from original tool for reference
-    original_params = tool_def.get('function', {}).get('parameters', {})
-    original_param_keys = list(original_params.get('properties', {}).keys())[:3]  # Show first 3 params
-    
-    prompt = f"""You are a tool generation expert. Generate {num_to_generate} synthetic tool definitions that:
+    tasks = context.get("tasks", [])
+    cooccurring_tools = context.get("cooccurring_tools", [])
 
-1. Are RELATED to "{tool_name}" in the same domain/category
-2. BUT have NOTICEABLY DIFFERENT purposes/functionality from each other and from the original
-3. Are NOT valid solutions for the benchmark tasks below
+    original_params = tool_def.get("function", {}).get("parameters", {})
+    properties = original_params.get("properties", {}) if isinstance(original_params, dict) else {}
+    original_param_keys = list(properties.keys()) if isinstance(properties, dict) else []
+    original_required = original_params.get("required", []) if isinstance(original_params, dict) else []
 
-Benchmark tasks that should NOT be solvable by these tools:
-{chr(10).join(f'   - {t[:100]}...' if len(t) > 100 else f'   - {t}' for t in sample_tasks)}
+    task_block = "\n".join(f"   - {task}" for task in tasks) or "   - No benchmark task text found"
 
-Original tool specification:
+    co_tools_summary = [summarize_tool_for_prompt(t) for t in cooccurring_tools]
+    co_tools_block = json.dumps(co_tools_summary, ensure_ascii=False, indent=2)
+
+    prompt = f"""You are generating realistic distractor API tools for WildToolBench. Generate EXACTLY {SYNTHETIC_TOOLS_PER_ID} synthetic tool definitions.
+
+The source tool represents normalized tool ID {normalized_id}. The task/context information below is aggregated across EVERY source row in which this normalized ID occurs.
+
+FUNCTIONAL REQUIREMENTS
+1. Stay in the same broad domain/category as the source tool.
+2. Give each synthetic tool a NOTICEABLY DIFFERENT purpose/functionality from the source tool and from the other synthetic tool.
+3. Neither synthetic tool may be a valid solution for ANY benchmark task shown below.
+4. Do not duplicate the functionality of any real co-occurring tool shown below.
+5. Use parameters appropriate to the new functionality rather than merely renaming source parameters.
+
+STYLE REQUIREMENTS -- MATCH WILDTOOLBENCH
+The synthetic tools must look as if they were written by the same API authors as the original WildToolBench tools. Do NOT make the synthetic descriptions more polished, verbose, or explanatory than the real tools.
+
+Follow these style rules strictly:
+- Prefer SHORT, direct API descriptions, usually one sentence.
+- Prefer simple verbs such as "Get", "Retrieve", "Create", "Update", "Delete", "Search", "Check", "Calculate", "List", or "Generate".
+- Avoid marketing/product language and explanatory clauses such as "allowing users to...", "helping users...", "ensuring...", "suitable for...", or long lists of benefits.
+- Do not make descriptions artificially detailed. Match the approximate brevity and plainness of the source and co-occurring WTB tools.
+- Tool names must be realistic camelCase and should resemble the naming conventions of the real tools in this context. Do not make names unusually elegant, long, or descriptive.
+- Parameter descriptions should also be short and API-like. Prefer wording such as "The name of the city.", "The ID of the user.", "The start date, in YYYY-MM-DD format."
+- Reuse the vocabulary, capitalization conventions, abbreviation style, and level of specificity visible in the source/co-occurring tools when appropriate.
+- Preserve normal API messiness if it is present in the examples; do not systematically improve naming or prose.
+- Do not mention benchmarks, distractors, synthetic generation, invalidity, or style matching in any generated field.
+
+Benchmark tasks associated with this source context:
+{task_block}
+
+Source tool specification:
+- normalized_tool_id: {normalized_id}
 - Name: {tool_name}
 - Description: {description}
 - Parameters: {original_param_keys}
 - Required parameters: {original_required}
 
-Related existing tools (for domain reference only, NOT to copy):
-{chr(10).join(f'  - {n}' for n in neighbor_names)}
+All unique real tools that co-occur with this source tool across ANY source row in which this normalized ID occurs. Treat these as both FUNCTIONAL EXCLUSIONS and STYLE EXAMPLES:
+{co_tools_block}
 
 Return tools in EXACTLY this JSON structure:
 
@@ -404,22 +526,14 @@ Return tools in EXACTLY this JSON structure:
   "type": "function"
 }}
 
-Key Requirements:
-- DIVERSITY: Make each synthetic tool distinctly different from the others (not just clones)
-- DOMAIN: All tools should be in the same domain/category as "{tool_name}" but solve different sub-problems
-- PARAMETERS: Each tool should have meaningfully different parameters (not just renamed copies)
-- DESCRIPTION: Write natural descriptions of what each tool DOES (don't mention tasks or what it doesn't do)
-- NOT A SOLUTION: Design tools that won't solve the benchmark tasks, but don't say that in the description
-- Tool names should be realistic and follow camelCase convention
-- Output ONLY valid JSON (no explanations, no markdown)
-- One complete tool definition per line
-
-Example of what makes tools distinct in the same domain:
-If original is 'getUserProfile', synthetic tools could be:
-- 'fetchUserSettings' (different scope: settings vs profile)
-- 'getUserMetrics' (different data: metrics vs profile)
-- 'getUserPermissions' (different focus: permissions vs profile)
-NOT just renamed copies like 'getUserProfileData' or 'getProfile'"""
+FINAL CHECKS
+- Return exactly {SYNTHETIC_TOOLS_PER_ID} tool definitions.
+- The two tools must solve different sub-problems.
+- Neither tool may solve any listed benchmark task.
+- Neither tool may duplicate the source or a co-occurring real tool.
+- Keep descriptions concise and stylistically similar to the real WTB tools above.
+- Output ONLY valid JSON, with one complete tool definition per line.
+- Do not wrap the response in markdown fences and do not add explanations."""
 
     response = call_generation_api(prompt, api_token, base_url, model=model, max_tokens=3072)
     synthetic_tools = _parse_generated_tools(response)
@@ -539,72 +653,100 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     synthetic_output = output_dir / "tools_en_synthetic_candidates.jsonl"
-    metadata_output = output_dir / "tools_en_synthetic_metadata.csv"
-    
+    metadata_output = output_dir / "tools_en_synthetic_metadata.json"
+
+    # Resume by source normalized ID rather than by offset. A source ID is skipped
+    # only if the existing result file already contains the full expected number
+    # of synthetic tools for that ID. Partial IDs are regenerated.
+    completed_ids, existing_counts = load_completed_source_ids(synthetic_output)
+    if completed_ids:
+        print(
+            f"Found {len(completed_ids)} already-complete normalized IDs in "
+            f"{synthetic_output}; these will be skipped"
+        )
+
+    before_resume_filter = len(ids_to_process)
+    ids_to_process = [normalized_id for normalized_id in ids_to_process if normalized_id not in completed_ids]
+    print(
+        f"Missing normalized IDs to generate: {len(ids_to_process)} "
+        f"(skipped {before_resume_filter - len(ids_to_process)} already complete)"
+    )
+
     synthetic_tools_all = []
     metadata_rows = []
-    
-    # Apply offset for batch processing
-    tools_to_process = tools_needing_synthetic[args.offset:]
-    if args.offset > 0:
-        print(f"Skipping first {args.offset} tools (offset={args.offset})")
-    
-    processed = 0
-    for idx, (tool_name, current_count) in enumerate(tools_to_process):
-        if args.max_tools_to_process > 0 and processed >= args.max_tools_to_process:
-            print(f"\nReached max tools to process ({args.max_tools_to_process})")
-            break
-        
-        num_needed = args.min_similar_tools - current_count
-        absolute_idx = args.offset + idx + 1
-        total_count = len(tools_needing_synthetic)
-        print(f"\n[{absolute_idx}/{total_count}] {tool_name}: {current_count}/{args.min_similar_tools} → generating {num_needed}")
-        
-        tool_def = tools[tool_name]
-        tool_neighbors = neighbors.get(tool_name, [])
-        tool_tasks = task_map.get(tool_name, [])
-        
-        synthetic = generate_synthetic_tools_for_tool(
-            tool_name, tool_def, tool_neighbors, tool_tasks, groq_token, args.model, num_to_generate=num_needed
+
+    for local_idx, normalized_id in enumerate(ids_to_process, start=1):
+        context = contexts[normalized_id]
+        tool_name = context["representative_name"]
+        tasks = context.get("tasks", [])
+        co_tools = context.get("cooccurring_tools", [])
+
+        absolute_idx = local_idx
+        print(
+            f"\n[{absolute_idx}/{len(ids_to_process)}] normalized_tool_id={normalized_id} "
+            f"{tool_name}: generating {SYNTHETIC_TOOLS_PER_ID}"
         )
-        
-        if synthetic:
-            print(f"  Generated {len(synthetic)} synthetic tools")
-            for syn_tool in synthetic:
-                syn_tool["_source_tool"] = tool_name
-                syn_tool["_synthetic"] = True
-                synthetic_tools_all.append(syn_tool)
-                
-                # Extract parameters info
-                func = syn_tool.get('function', {})
-                params = func.get('parameters', {})
-                param_names = list(params.get('properties', {}).keys())
-                required_params = params.get('required', [])
-                
-                metadata_rows.append({
+        print(
+            f"  first occurrence row={context['first_row_number']}, "
+            f"occurrences={context['occurrence_count']}, "
+            f"tasks={len(tasks)}, co-occurring tools={len(co_tools)}"
+        )
+
+        synthetic = generate_synthetic_tools_for_id(context, api_key, args.base_url, args.model)
+
+        if not synthetic:
+            print("  Failed to generate synthetic tools")
+            continue
+
+        print(f"  Generated {len(synthetic)} synthetic tools")
+
+        for syn_tool in synthetic:
+            syn_tool["_source_tool_id"] = normalized_id
+            syn_tool["_source_tool"] = tool_name
+            syn_tool["_synthetic"] = True
+            synthetic_tools_all.append(syn_tool)
+
+            func = syn_tool.get("function", {})
+            params = func.get("parameters", {}) if isinstance(func, dict) else {}
+            param_names = list(params.get("properties", {}).keys()) if isinstance(params, dict) else []
+            required_params = params.get("required", []) if isinstance(params, dict) else []
+
+            metadata_rows.append(
+                {
+                    "source_normalized_tool_id": normalized_id,
                     "source_tool": tool_name,
-                    "synthetic_tool_name": func.get('name', 'unknown'),
-                    "synthetic_tool_description": func.get('description', ''),
-                    "parameters": ','.join(param_names) if param_names else '',
-                    "required_parameters": ','.join(required_params) if required_params else '',
-                })
-        else:
-            print(f"  Failed to generate synthetic tools")
-        
-        processed += 1
-    
-    # Write outputs (append mode for batch processing)
-    print(f"\nWriting outputs...")
-    mode = 'a' if args.offset > 0 else 'w'  # Append if offset > 0 (batch mode), else overwrite
-    with open(synthetic_output, mode, encoding='utf-8') as f:
+                    "source_first_occurrence_row": context["first_row_number"],
+                    "source_occurrence_count": context["occurrence_count"],
+                    "benchmark_row_index": context.get("benchmark_row_index"),
+                    "benchmark_task_count": len(tasks),
+                    "benchmark_tasks": tasks,
+                    "cooccurring_tool_ids": [
+                        t.get("normalized_tool_id") for t in co_tools
+                    ],
+                    "cooccurring_tool_names": [
+                        _tool_name(t) for t in co_tools
+                    ],
+                    "synthetic_tool_name": func.get("name", "unknown"),
+                    "synthetic_tool_description": func.get("description", ""),
+                    "parameters": param_names,
+                    "required_parameters": required_params if isinstance(required_params, list) else [],
+                }
+            )
+
+    print("\nWriting outputs...")
+
+    # Always append newly generated IDs. Existing completed IDs were filtered
+    # before generation, so reruns do not duplicate complete results.
+    with open(synthetic_output, "a", encoding="utf-8") as f:
         for tool in synthetic_tools_all:
-            f.write(json.dumps(tool, ensure_ascii=False) + '\n')
-    print(f"  Wrote {len(synthetic_tools_all)} synthetic tools to {synthetic_output} ({mode}ode)")
-    
-    # Write metadata as JSON instead of CSV (append for batch processing)
-    metadata_output = output_dir / "tools_en_synthetic_metadata.json"
-    if args.offset > 0:
-        # Append to existing metadata
+            f.write(json.dumps(tool, ensure_ascii=False) + "\n")
+
+    print(
+        f"  Appended {len(synthetic_tools_all)} synthetic tools to "
+        f"{synthetic_output}"
+    )
+
+    if metadata_output.exists():
         try:
             with open(metadata_output, "r", encoding="utf-8") as f:
                 existing_metadata = json.load(f)

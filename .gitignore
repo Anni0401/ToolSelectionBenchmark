@@ -11,3 +11,5 @@ wtb-*
 wild-tool-bench/wtb/model_handler/api_inference/tool_embeddings_cache*.json
 logs/*
 wild-tool-bench/result/in_context/tool_selection_logs.jsonlwild-tool-bench/result/in_context/tool_selection_logs.jsonl
+analysis_embeddings/tools_en_all_neighbors.csv
+wild-tool-bench/result/in_context/tool_selection_logs.jsonl

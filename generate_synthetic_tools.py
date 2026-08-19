@@ -12,7 +12,7 @@ multiple times.  For each ID this script:
 2. keeps the complete tool row containing that first occurrence as context;
 3. finds the best matching benchmark record and passes along its task(s);
 4. passes along all other tools from the representative's first-occurrence row;
-5. asks the LLM for exactly TWO synthetic tools.
+5. asks the LLM for exactly THREE synthetic tools.
 
 No nearest-neighbor CSV is used.
 """
@@ -47,7 +47,7 @@ except ImportError:
     sys.exit(1)
 
 
-SYNTHETIC_TOOLS_PER_ID = 2
+SYNTHETIC_TOOLS_PER_ID = 3
 
 SAIA_DEFAULT_BASE_URL = "https://chat-ai.academiccloud.de/v1"
 SAIA_DEFAULT_MODEL = "openai-gpt-oss-120b"
@@ -493,6 +493,12 @@ Follow these style rules strictly:
 - Preserve normal API messiness if it is present in the examples; do not systematically improve naming or prose.
 - Do not mention benchmarks, distractors, synthetic generation, invalidity, or style matching in any generated field.
 
+FORMAT REQUIREMENTS -- MATCH WILDTOOLBENCH JSON LAYOUT
+- Inside each "function" object, put "description" BEFORE "name".
+- Inside "parameters", order keys as "properties", then "required", then "type".
+- Inside each property object, put "description" BEFORE "type".
+- Order the keys within "properties" alphabetically by parameter name.
+
 Benchmark tasks associated with this source context:
 {task_block}
 
@@ -510,17 +516,17 @@ Return tools in EXACTLY this JSON structure:
 
 {{
   "function": {{
-    "name": "syntheticToolName",
     "description": "Short WTB-style description of the tool.",
+    "name": "syntheticToolName",
     "parameters": {{
-      "type": "object",
       "properties": {{
         "param1": {{
-          "type": "string",
-          "description": "Short WTB-style parameter description."
+          "description": "Short WTB-style parameter description.",
+          "type": "string"
         }}
       }},
-      "required": ["param1"]
+      "required": ["param1"],
+      "type": "object"
     }}
   }},
   "type": "function"
@@ -532,6 +538,7 @@ FINAL CHECKS
 - Neither tool may solve any listed benchmark task.
 - Neither tool may duplicate the source or a co-occurring real tool.
 - Keep descriptions concise and stylistically similar to the real WTB tools above.
+- Match the required key ordering: "description" before "name", "properties" keys alphabetical, and "description" before "type" within each property.
 - Output ONLY valid JSON, with one complete tool definition per line.
 - Do not wrap the response in markdown fences and do not add explanations."""
 

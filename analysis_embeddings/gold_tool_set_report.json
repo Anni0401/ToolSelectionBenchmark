@@ -1,11 +1,11 @@
 {
   "total_original_before": 733,
-  "total_synthetic_before": 1391,
-  "rule2_exact_name_match": 30,
-  "rule3_high_sim_unrelated_original": 72,
-  "rule4_high_sim_synthetic_pairs": 43,
-  "total_removed": 145,
+  "total_synthetic_before": 2066,
+  "rule2_exact_name_match": 29,
+  "rule3_high_sim_unrelated_original": 209,
+  "rule4_high_sim_synthetic_pairs": 100,
+  "total_removed": 338,
   "final_original_count": 618,
-  "final_synthetic_count": 983,
-  "final_total_count": 1601
+  "final_synthetic_count": 1283,
+  "final_total_count": 1901
 }

@@ -163,7 +163,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
         for neighbor in neighbors:
             # Check if it's an original AND not the parent AND >0.75 similar
             neighbor_id = orig_id_by_name.get(neighbor['name'])
-            if neighbor['type'] == 'original' and neighbor_id != parent_id and neighbor['similarity'] > 0.8:
+            if neighbor['type'] == 'original' and neighbor_id != parent_id and neighbor['similarity'] > 0.75:
                 rule3_removals.add(synth_name)
                 break
     
@@ -171,7 +171,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
     for name in rule3_removals:
         del synth_map[name]
     
-    # Rule 4: Remove synthetic tool pairs >0.93 similar from different parents
+    # Rule 4: Remove synthetic tool pairs >0.9 similar from different parents
     rule4_removals = set()
     synth_names_list = list(synth_map.keys())
     
@@ -186,7 +186,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
             synth2_name = neighbor['name']
             
             # Check if it's synthetic AND >0.9 similar AND different parents
-            if neighbor['type'] == 'synthetic' and neighbor['similarity'] > 0.93:
+            if neighbor['type'] == 'synthetic' and neighbor['similarity'] > 0.9:
                 synth2_tool = synth_map.get(synth2_name)
                 parent2 = get_synthetic_parent_id(synth2_tool) if synth2_tool else None
                 
@@ -195,7 +195,7 @@ def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_d
                     rule4_removals.add(synth2_name)
                     break
     
-    print(f"Rule 4 - High similarity pairs from different parents (>0.93): {len(rule4_removals)}")
+    print(f"Rule 4 - High similarity pairs from different parents (>0.9): {len(rule4_removals)}")
     for name in rule4_removals:
         synth_map.pop(name, None)
     

@@ -623,87 +623,110 @@ class InContextToolSelector(ToolSelector):
 
 class HierarchicalToolSelector(ToolSelector):
     """Strategy 2: Hierarchical selection with a smaller LLM.
-    
-    Uses a smaller/faster LLM to select which tools are relevant from all 618 valid tools,
-    then passes only those to the main LLM.
+
+    The selector LLM sees name+description for:
+      1. the task-specific WTB tools supplied in the request
+      2. the synthetic distractor tools in tool_schemas_cache.jsonl
+
+    Once the selector LLM returns tool names, the full schema (including the
+    task's own `required` overrides) is looked up from the WTB request tools
+    first, falling back to the synthetic cache -- never from a separate
+    global/merged tool pool.
     """
     
     def __init__(self, schema_cache_file: str = None):
         self.endpoint = os.getenv("LANGGRAPH_SELECTOR_LLM_ENDPOINT")
         self.api_key = os.getenv("LANGGRAPH_SELECTOR_LLM_API_KEY")
         self.model = os.getenv("LANGGRAPH_SELECTOR_LLM_MODEL", "Qwen/Qwen3-30B-A3B")
-        self.max_context_tokens = int(os.getenv("LANGGRAPH_SELECTOR_MAX_CONTEXT_TOKENS", "40960"))
         self.max_output_tokens = int(os.getenv("LANGGRAPH_SELECTOR_MAX_OUTPUT_TOKENS", "400"))
-        self.prompt_headroom_tokens = int(os.getenv("LANGGRAPH_SELECTOR_PROMPT_HEADROOM_TOKENS", "1024"))
-        self.max_conversation_chars = int(os.getenv("LANGGRAPH_SELECTOR_MAX_CONVERSATION_CHARS", "6000"))
-        self.max_tool_desc_chars = int(os.getenv("LANGGRAPH_SELECTOR_MAX_TOOL_DESC_CHARS", "180"))
-        # Controls what conversation context is included in selector prompt:
-        # - latest_user: only latest user message (default)
-        # - full: bounded full history
-        # - none: no conversation context
-        self.selector_context_mode = (
-            os.getenv("LANGGRAPH_SELECTOR_CONTEXT_MODE", "latest_user") or "latest_user"
-        ).strip().lower()
         self.last_selection_metrics = {}
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
-            "tool_schemas_cache.json"
+            "tool_schemas_cache.jsonl"
         )
-        self.tools_cache = None
-        self._load_schema_cache()
-    
-    def _load_schema_cache(self):
-        """Load all valid tools from schema cache file."""
-        if os.path.exists(self.schema_cache_file):
-            try:
-                with open(self.schema_cache_file, 'r') as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and "tools" in data:
-                        loaded_tools = data["tools"]
+        self.synthetic_tools_cache = []
+        self._load_synthetic_tools_cache()
+
+    @staticmethod
+    def _sanitize_tool(tool: dict) -> Optional[dict]:
+        """Convert a tool to the standard OpenAI function-tool schema.
+
+        Private benchmark metadata such as `_synthetic`/`_source_tool` is
+        intentionally not forwarded to the selector or the executor.
+        """
+        if not isinstance(tool, dict):
+            return None
+
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return None
+
+        name = str(func.get("name", "")).strip()
+        description = str(func.get("description", "")).strip()
+        parameters = func.get("parameters")
+
+        if not name or not description or not isinstance(parameters, dict):
+            return None
+
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": copy.deepcopy(parameters),
+            },
+        }
+
+    def _load_synthetic_tools_cache(self):
+        """Load ONLY synthetic distractor tools from tool_schemas_cache.jsonl."""
+        if not os.path.exists(self.schema_cache_file):
+            print(f"[WARNING] Synthetic schema cache not found: {self.schema_cache_file}")
+            self.synthetic_tools_cache = []
+            return
+
+        loaded_tools = []
+        try:
+            with open(self.schema_cache_file, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        print(f"[WARNING] Invalid JSON in synthetic tool cache line {line_no}: {exc}")
+                        continue
+                    if isinstance(entry, list):
+                        loaded_tools.extend(entry)
                     else:
-                        loaded_tools = data if isinstance(data, list) else []
+                        loaded_tools.append(entry)
 
-                    # Deduplicate by normalized name + description to reduce
-                    # prompt bloat without removing distinct tool semantics.
-                    seen_keys = set()
-                    deduped_tools = []
-                    duplicates = 0
-                    for tool in loaded_tools:
-                        func = tool.get("function", {}) if isinstance(tool, dict) else {}
-                        name = str(func.get("name", "")).strip()
-                        desc = " ".join(str(func.get("description", "")).split()).strip().lower()
-                        key = (name, desc)
-                        if key in seen_keys:
-                            duplicates += 1
-                            continue
-                        seen_keys.add(key)
-                        deduped_tools.append(tool)
+            seen_keys = set()
+            deduped_tools = []
+            duplicates = 0
+            for tool in loaded_tools:
+                clean_tool = self._sanitize_tool(tool)
+                if clean_tool is None:
+                    continue
+                func = clean_tool["function"]
+                key = (func["name"], " ".join(func["description"].split()).strip().lower())
+                if key in seen_keys:
+                    duplicates += 1
+                    continue
+                seen_keys.add(key)
+                deduped_tools.append(clean_tool)
 
-                    self.tools_cache = deduped_tools
-                    print(
-                        f"[HIERARCHICAL SELECTOR] Loaded {len(loaded_tools)} tools from schema cache, "
-                        f"deduplicated to {len(self.tools_cache)} (removed {duplicates})"
-                    )
-            except Exception as e:
-                print(f"[WARNING] Failed to load schema cache: {e}")
-                self.tools_cache = []
-        else:
-            print(f"[WARNING] Schema cache file not found: {self.schema_cache_file}")
-            self.tools_cache = []
+            self.synthetic_tools_cache = deduped_tools
+            print(
+                f"[HIERARCHICAL SELECTOR] Loaded {len(loaded_tools)} synthetic tools from cache, "
+                f"deduplicated to {len(self.synthetic_tools_cache)} (removed {duplicates})"
+            )
+        except Exception as e:
+            print(f"[WARNING] Failed to load synthetic tool cache: {e}")
+            self.synthetic_tools_cache = []
     
-    def _estimate_tokens(self, text: str) -> int:
-        """Rough token estimate (safe over-approximation for Latin text)."""
-        return max(1, (len(text) + 3) // 4)
-
-    def _prompt_token_budget(self) -> int:
-        budget = self.max_context_tokens - self.max_output_tokens - self.prompt_headroom_tokens
-        return max(1024, budget)
-
-    def _serialize_messages_for_selector(self, messages: list, char_budget: int = None) -> str:
-        """Render conversation history with size limits to avoid context overflow."""
-        if char_budget is None:
-            char_budget = self.max_conversation_chars
-
+    def _serialize_messages_for_selector(self, messages: list) -> str:
+        """Render the full conversation history for the selector prompt."""
         rendered = []
         for msg in messages:
             role = msg.get("role", "unknown")
@@ -720,51 +743,13 @@ class HierarchicalToolSelector(ToolSelector):
         if not rendered:
             return "(no conversation history)"
 
-        # Keep newest turns first under a char budget since latest user turns are
-        # usually the strongest signal for tool relevance.
-        kept = []
-        used_chars = 0
-        for role, content in reversed(rendered):
-            item = f"{role}: {content}"
-            item_len = len(item) + 8
-            if kept and used_chars + item_len > char_budget:
-                break
-            kept.append((role, content))
-            used_chars += item_len
-
-        kept.reverse()
         lines = []
-        for idx, (role, content) in enumerate(kept, start=1):
+        for idx, (role, content) in enumerate(rendered, start=1):
             lines.append(f"{idx}. {role}: {content}")
         return "\n".join(lines)
 
-    def _latest_user_message(self, messages: list) -> str:
-        """Return latest user message for compact selector context."""
-        for msg in reversed(messages):
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                content = json.dumps(content, ensure_ascii=False)
-            elif not isinstance(content, str):
-                content = str(content)
-            content = content.strip()
-            if content:
-                return f"1. user: {content}"
-        return "(no user message)"
-
-    def _selector_context_text(self, messages: list, char_budget: int) -> str:
-        """Build selector context according to configured context mode."""
-        mode = self.selector_context_mode
-        if mode == "none":
-            return "(no conversation context)"
-        if mode == "latest_user":
-            return self._latest_user_message(messages)
-        return self._serialize_messages_for_selector(messages, char_budget)
-
-    def _build_selector_prompt(self, messages: list, tools: list) -> tuple[str, int]:
-        """Build selector prompt while keeping full tool list and trimming only history."""
-        base_conversation_budget = self.max_conversation_chars
+    def _build_selector_prompt(self, messages: list, tools: list) -> str:
+        """Build selector prompt with the full conversation history and full tool list."""
         prompt_header = (
             "Given the conversation so far, select the most relevant tools from the available list. /no_think\n\n"
             "Conversation History:\n"
@@ -780,26 +765,11 @@ class HierarchicalToolSelector(ToolSelector):
         )
 
         tool_text = self._format_tools(tools)
-        token_budget = self._prompt_token_budget()
+        conversation_history = self._serialize_messages_for_selector(messages)
+        final_prompt = prompt_header.format(conversation_history=conversation_history) + tool_text + prompt_footer
 
-        # Keep the full tool list and full descriptions. Only reduce conversation history.
-        attempted_budget = base_conversation_budget
-        conversation_history = self._selector_context_text(messages, attempted_budget)
-        final_prompt = (prompt_header.format(conversation_history=conversation_history) + tool_text + prompt_footer)
-        est_tokens = self._estimate_tokens(final_prompt)
-        while est_tokens > token_budget and attempted_budget > 0 and self.selector_context_mode == "full":
-            attempted_budget = max(0, attempted_budget // 2)
-            conversation_history = self._selector_context_text(messages, attempted_budget)
-            final_prompt = (prompt_header.format(conversation_history=conversation_history) + tool_text + prompt_footer)
-            est_tokens = self._estimate_tokens(final_prompt)
-
-        tools_in_prompt = len(tools)
-        print(
-            f"[HIERARCHICAL SELECTOR] prompt_est_tokens={est_tokens}, "
-            f"budget={token_budget}, tools_in_prompt={tools_in_prompt}/{tools_in_prompt}, "
-            f"conversation_chars_budget={attempted_budget}, context_mode={self.selector_context_mode}"
-        )
-        return final_prompt, attempted_budget
+        print(f"[HIERARCHICAL SELECTOR] tools_in_prompt={len(tools)}")
+        return final_prompt
 
     def _normalize_text(self, value: str) -> str:
         """Normalize text for robust selector-output matching."""
@@ -888,18 +858,33 @@ class HierarchicalToolSelector(ToolSelector):
         return selected
 
     def select(self, messages: list, tools: list) -> list:
-        """Use a small LLM to select relevant tools from all 618 valid tools."""
+        """Use a small LLM to select relevant tools from task tools + synthetic distractors."""
         if not self.endpoint:
             raise ValueError("LANGGRAPH_SELECTOR_LLM_ENDPOINT environment variable must be set for hierarchical mode")
-        
-        # Use schema cache tools instead of request tools
-        all_tools = self.tools_cache if self.tools_cache else tools
-        
+
+        # WTB task tools are the source of truth, including their task-specific
+        # `required` overrides. Do NOT replace them with cache versions.
+        task_tools = []
+        for tool in tools or []:
+            clean_tool = self._sanitize_tool(tool)
+            if clean_tool is not None:
+                task_tools.append(clean_tool)
+
+        task_tool_names = {t["function"]["name"] for t in task_tools}
+
+        # Task tool names always win over synthetic distractors with the same name.
+        synthetic_tools = [
+            t for t in self.synthetic_tools_cache
+            if t["function"]["name"] not in task_tool_names
+        ]
+
+        all_tools = task_tools + synthetic_tools
+
         if not all_tools:
             return []
         
         query = self._extract_query(messages)
-        selection_prompt, used_conversation_budget = self._build_selector_prompt(messages, all_tools)
+        selection_prompt = self._build_selector_prompt(messages, all_tools)
         
         response, selector_usage, selector_latency = self._invoke_selector_llm(selection_prompt)
         selector_input_tokens = int(selector_usage.get("prompt_tokens", 0) or 0)
@@ -908,7 +893,6 @@ class HierarchicalToolSelector(ToolSelector):
             "selector_input_tokens": selector_input_tokens,
             "selector_output_tokens": selector_output_tokens,
             "selector_total_tokens": selector_input_tokens + selector_output_tokens,
-            "selector_conversation_chars_budget": used_conversation_budget,
         }
         selected_specs, selected_names = self._parse_selector_output(response)
         selected = self._match_selected_tools(all_tools, selected_specs)
@@ -926,7 +910,6 @@ class HierarchicalToolSelector(ToolSelector):
                 "selector_input_tokens": selector_input_tokens,
                 "selector_output_tokens": selector_output_tokens,
                 "selector_latency_s": selector_latency,
-                "selector_conversation_chars_budget": used_conversation_budget,
             }
         )
         
@@ -955,14 +938,12 @@ class HierarchicalToolSelector(ToolSelector):
         return ""
     
     def _format_tools(self, tools: list) -> str:
-        """Format full tool list for the selector LLM with compact descriptions."""
+        """Format full tool list for the selector LLM with full descriptions."""
         lines = []
         for tool in tools:
             func = tool.get("function", {})
             name = func.get("name", "unknown")
             desc = (func.get("description", "") or "").strip().replace("\n", " ")
-            if self.max_tool_desc_chars > 0 and len(desc) > self.max_tool_desc_chars:
-                desc = desc[: self.max_tool_desc_chars - 3].rstrip() + "..."
             lines.append(f"- {name}: {desc}")
         return "\n".join(lines)
     
@@ -2146,9 +2127,11 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
             os.path.dirname(__file__),
             "tool_embeddings_cache_qwen3.json"
         )
+        # Synthetic-distractor-only cache; WTB task tools come from the request
+        # and are the source of truth for their own `required` fields.
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
-            "tool_schemas_cache.json"
+            "tool_schemas_cache.jsonl"
         )
         self.tools_file = tools_file
         self.api_key = os.getenv("QWEN3_EMBEDDING_API_KEY", "EMPTY")
@@ -2156,18 +2139,9 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         self.model = os.getenv("QWEN3_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
         self.embedding_cache = {}
         self.last_selection_metrics = {}
-        self.tools_cache = None
-        self.tools_en_file = os.getenv("LANGGRAPH_TOOLS_EN_FILE") or os.path.abspath(
-            os.path.join(
-                os.path.dirname(__file__),
-                "../../../../multi-agent-framework/tools/tools_en.jsonl",
-            )
-        )
-        self.task_tools_by_index = []
-        self.task_tools_by_benchmark_id = {}
+        self.synthetic_tools_cache = []
         self._load_cache()
-        self._load_valid_tools_from_schema_cache()
-        self._load_task_tools_reference()
+        self._load_synthetic_tools_cache()
 
     def _extract_query(self, messages: list) -> str:
         """Extract the latest user query and prepend the Qwen3 instruction prefix."""
@@ -2207,148 +2181,78 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         return f"{name}: {desc}\nParameters: {params}"
 
     @staticmethod
-    def _normalize_required(required: Any) -> list:
-        if isinstance(required, list):
-            return [str(item) for item in required]
-        return []
-
-    @staticmethod
-    def _to_int_or_none(value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except Exception:
+    def _sanitize_tool(tool: dict) -> Optional[dict]:
+        """Convert a tool to the standard OpenAI function-tool schema, dropping benchmark metadata."""
+        if not isinstance(tool, dict):
             return None
 
-    @staticmethod
-    def _extract_tools_from_jsonl_entry(entry: Any) -> list:
-        if isinstance(entry, list):
-            return entry
-        if isinstance(entry, dict):
-            for key in ("tools", "tool_schemas", "available_tools"):
-                value = entry.get(key)
-                if isinstance(value, list):
-                    return value
-        return []
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return None
 
-    @staticmethod
-    def _required_override_signature(tool: dict) -> tuple:
-        """Name+parameter-names key used to locate the task's true required list."""
-        func = tool.get("function", {}) if isinstance(tool, dict) else {}
-        params = func.get("parameters", {}) if isinstance(func, dict) else {}
-        props = params.get("properties", {}) if isinstance(params, dict) else {}
-        param_names = tuple(sorted(props.keys())) if isinstance(props, dict) else tuple()
-        return (func.get("name"), param_names)
+        name = str(func.get("name", "")).strip()
+        description = str(func.get("description", "")).strip()
+        parameters = func.get("parameters")
 
-    def _load_task_tools_reference(self):
-        """Load per-task tools from tools_en.jsonl to recover task-specific required fields."""
-        if not os.path.exists(self.tools_en_file):
-            print(f"[QWEN3 EMBEDDING SELECTOR] tools_en reference file not found: {self.tools_en_file}")
+        if not name or not description or not isinstance(parameters, dict):
+            return None
+
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": copy.deepcopy(parameters),
+            },
+        }
+
+    def _load_synthetic_tools_cache(self):
+        """Load ONLY synthetic distractor tools from tool_schemas_cache.jsonl."""
+        if not os.path.exists(self.schema_cache_file):
+            print(f"[QWEN3 EMBEDDING SELECTOR] Synthetic schema cache not found: {self.schema_cache_file}")
+            self.synthetic_tools_cache = []
             return
 
+        loaded_tools = []
         try:
-            with open(self.tools_en_file, "r", encoding="utf-8") as f:
-                for line in f:
+            with open(self.schema_cache_file, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
                     line = line.strip()
                     if not line:
                         continue
-
                     try:
                         entry = json.loads(line)
-                    except Exception:
+                    except json.JSONDecodeError as exc:
+                        print(f"[WARNING] Invalid JSON in synthetic tool cache line {line_no}: {exc}")
                         continue
+                    if isinstance(entry, list):
+                        loaded_tools.extend(entry)
+                    else:
+                        loaded_tools.append(entry)
 
-                    entry_tools = self._extract_tools_from_jsonl_entry(entry)
-                    self.task_tools_by_index.append(entry_tools)
+            seen_keys = set()
+            deduped_tools = []
+            duplicates = 0
+            for tool in loaded_tools:
+                clean_tool = self._sanitize_tool(tool)
+                if clean_tool is None:
+                    continue
+                func = clean_tool["function"]
+                key = (func["name"], " ".join(func["description"].split()).strip().lower())
+                if key in seen_keys:
+                    duplicates += 1
+                    continue
+                seen_keys.add(key)
+                deduped_tools.append(clean_tool)
 
-                    if isinstance(entry, dict):
-                        benchmark_task_id = entry.get("benchmark_task_id")
-                        if benchmark_task_id is None:
-                            benchmark_task_id = entry.get("benchmark_task")
-                        benchmark_task_id = self._to_int_or_none(benchmark_task_id)
-                        if benchmark_task_id is not None:
-                            self.task_tools_by_benchmark_id[benchmark_task_id] = entry_tools
-
+            self.synthetic_tools_cache = deduped_tools
             print(
-                "[QWEN3 EMBEDDING SELECTOR] Loaded task-tool reference rows: "
-                f"{len(self.task_tools_by_index)} from {os.path.basename(self.tools_en_file)}"
+                f"[QWEN3 EMBEDDING SELECTOR] Loaded {len(loaded_tools)} synthetic tools from cache, "
+                f"deduplicated to {len(self.synthetic_tools_cache)} (removed {duplicates})"
             )
         except Exception as e:
-            print(f"[WARNING] Failed to load tools_en reference file: {e}")
-
-    def _get_task_tools_for_request(self, request_tools: list) -> tuple[list, Optional[int], Optional[int], int]:
-        """Resolve task tools by benchmark_task_id/task_idx with robust index fallback."""
-        benchmark_task_id = self._to_int_or_none(getattr(_request_context, "benchmark_task_id", None))
-        task_idx = self._to_int_or_none(getattr(_request_context, "task_idx", None))
-
-        if benchmark_task_id is not None and benchmark_task_id in self.task_tools_by_benchmark_id:
-            return self.task_tools_by_benchmark_id[benchmark_task_id], benchmark_task_id, None, 0
-
-        if task_idx is None or not self.task_tools_by_index:
-            return [], benchmark_task_id, task_idx, 0
-
-        candidate_indices = []
-        if 0 <= task_idx < len(self.task_tools_by_index):
-            candidate_indices.append(task_idx)
-        if task_idx > 0 and 0 <= task_idx - 1 < len(self.task_tools_by_index):
-            candidate_indices.append(task_idx - 1)
-
-        if not candidate_indices:
-            return [], benchmark_task_id, task_idx, 0
-
-        # If task_idx indexing convention is unclear, choose the candidate line
-        # that best matches the incoming request tools.
-        request_signatures = {self._required_override_signature(t) for t in (request_tools or [])}
-        best_idx = candidate_indices[0]
-        best_score = -1
-        for idx in candidate_indices:
-            candidate_signatures = {self._required_override_signature(t) for t in self.task_tools_by_index[idx]}
-            score = len(candidate_signatures.intersection(request_signatures)) if request_signatures else 0
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-
-        return self.task_tools_by_index[best_idx], benchmark_task_id, task_idx, best_score
-
-    def _apply_required_overrides_for_task(self, tools: list, task_tools: list) -> tuple[list, int]:
-        """Overwrite required fields for tools matching the task's true name + parameter names.
-
-        The embedded/deduped tool set can collapse tools that share a name and
-        parameter set but need a different 'required' list for this specific
-        task, so the task's own tools_en.jsonl entry is the source of truth.
-        """
-        if not tools or not task_tools:
-            return tools, 0
-
-        task_required_by_signature = {}
-        for task_tool in task_tools:
-            signature = self._required_override_signature(task_tool)
-            if not signature[0]:
-                continue
-            params = task_tool.get("function", {}).get("parameters", {})
-            task_required_by_signature[signature] = self._normalize_required(params.get("required"))
-
-        if not task_required_by_signature:
-            return tools, 0
-
-        adjusted_tools = []
-        overrides_count = 0
-
-        for tool in tools:
-            signature = self._required_override_signature(tool)
-            if signature in task_required_by_signature:
-                required = task_required_by_signature[signature]
-                tool_copy = copy.deepcopy(tool)
-                tool_copy.setdefault("function", {})
-                tool_copy["function"].setdefault("parameters", {})
-                tool_copy["function"]["parameters"]["required"] = required
-                adjusted_tools.append(tool_copy)
-                overrides_count += 1
-            else:
-                adjusted_tools.append(tool)
-
-        return adjusted_tools, overrides_count
+            print(f"[WARNING] Failed to load synthetic tool cache: {e}")
+            self.synthetic_tools_cache = []
 
     def select(self, messages: list, tools: list) -> list:
         """Select top-k tools using Qwen3-Embedding-8B via local vLLM endpoint."""
@@ -2366,7 +2270,21 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                 "openai package is required. Install with: pip install openai"
             )
 
-        all_tools = self.tools_cache if self.tools_cache else tools
+        # WTB task tools are the source of truth, including their task-specific
+        # `required` overrides. Synthetic distractors fill out the candidate pool.
+        task_tools = []
+        for tool in tools or []:
+            clean_tool = self._sanitize_tool(tool)
+            if clean_tool is not None:
+                task_tools.append(clean_tool)
+
+        task_tool_names = {t["function"]["name"] for t in task_tools}
+        synthetic_tools = [
+            t for t in self.synthetic_tools_cache
+            if t["function"]["name"] not in task_tool_names
+        ]
+        all_tools = task_tools + synthetic_tools
+
         if not all_tools:
             print("[QWEN3 EMBEDDING SELECTOR] No tools available")
             return []
@@ -2449,16 +2367,12 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                 if len(selected) >= self.top_k:
                     break
 
-        task_tools, benchmark_task_id, task_idx, task_match_score = self._get_task_tools_for_request(tools)
-        selected, overrides_count = self._apply_required_overrides_for_task(selected, task_tools)
-
         print(f"\n[QWEN3 EMBEDDING SELECTOR]")
         print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
         print(f"  Model: {self.model}")
         print(f"  Total available tools: {len(all_tools)}")
         print(f"  Top-k (unique): {self.top_k}")
         print(f"  Cache hits: {cached_count}, Runtime computed: {missing_count}")
-        print(f"  Required overrides applied: {overrides_count}")
         print(f"  Selected tools (ranked by relevance):")
         for i, (tool, score) in enumerate(zip(selected[:5], selected_scores[:5])):
             tool_name = tool.get("function", {}).get("name", "unknown")
@@ -2492,10 +2406,6 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                     f"{tool.get('function', {}).get('name', 'unknown')}#{i}": float(score)
                     for i, (tool, score) in enumerate(zip(selected, selected_scores))
                 },
-                "required_overrides": overrides_count,
-                "benchmark_task_id": benchmark_task_id,
-                "task_idx": task_idx,
-                "task_row_match_score": task_match_score,
                 **embedding_metrics,
             },
         )

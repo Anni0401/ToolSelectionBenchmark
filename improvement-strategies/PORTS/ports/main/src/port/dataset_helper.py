@@ -3,6 +3,8 @@ from transformers import AutoTokenizer
 from typing import List
 import torch
 import random
+import os
+import glob
 from transformers import AutoModel
 
 from transformers.data.data_collator import DataCollatorMixin
@@ -297,6 +299,10 @@ class DatasetDownloader():
         data_path = "/".join([base_ds_path, dataset_mapping[dataset_name]])
         self.data_path = data_path
 
+    def _local_toolbench_path(self):
+        """Path to the locally provided ToolBench jsonl files (ports/datasets/ToolBench)."""
+        return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "datasets", "ToolBench"))
+
     def get_dataset(self):
         """
         Download and return the dataset
@@ -312,6 +318,13 @@ class DatasetDownloader():
                 ds_test = load_dataset("ToolRetriever/ToolENonOverlapping", "parsed_data_90_10",split="test")
                 ds["test"] = ds_test
 
+        elif "toolbench" in self.dataset_name and os.path.isdir(self._local_toolbench_path()):
+            local_path = self._local_toolbench_path()
+            print(f"Loading local ToolBench dataset from {local_path}")
+            train_files = sorted(glob.glob(os.path.join(local_path, "train", "*.jsonl")))
+            test_files = sorted(glob.glob(os.path.join(local_path, "test", "*.jsonl")))
+            ds = load_dataset("json", data_files={"train": train_files, "test": test_files})
+
         else:
             print(f"Loading {self.data_path} - {self.data_sub_split}")
             ds = load_dataset(self.data_path, self.data_sub_split)
@@ -323,7 +336,8 @@ class DatasetDownloader():
         print(ds)
         print("************************************")
 
-        if "toolbench" in self.dataset_name:
+        if "toolbench" in self.dataset_name and "_" in self.dataset_name:
+            # only filter by group when a group suffix (e.g. "toolbench_1") is given; "toolbench" alone keeps all groups
             split_group = f"G{self.dataset_name.split('_')[-1]}"
             for split in ds:
                 ds[split] = ds[split].filter(lambda x : x["group"] == split_group)

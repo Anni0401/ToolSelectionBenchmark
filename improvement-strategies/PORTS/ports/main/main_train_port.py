@@ -9,6 +9,7 @@ import random
 import json
 import numpy as np
 import shutil
+import gc
 
 from typing import List
 from transformers.data.data_collator import DataCollatorMixin
@@ -412,20 +413,24 @@ def run_evaluation(
 
     # ******************** Prepare SentenceTransformer Wrapper ********************
     logger.info(f"Preparing SentenceTransformer wrapper for evaluation")
-    tmp_model_path = os.path.join("tmp_retr_model_eval") # Temporary directory
-    # PeftModel.save_pretrained only writes adapter weights. merge_and_unload() would
-    # permanently strip the LoRA layers from this training model, so merge in-place
-    # (reversible) instead, save the plain base model, then unmerge to resume training.
+    # Reuse the already-loaded (quantized) retr_model in-place instead of saving/reloading a
+    # second full-precision copy from disk (that previously added ~16GB of extra GPU memory
+    # per evaluation call and was never reclaimed in time, causing OOMs during training).
+    # merge_adapter() merges the LoRA delta into the base weights in-place (reversible via
+    # unmerge_adapter()), so we can wrap the SAME live model/tensors for embedding without
+    # ever creating a second copy.
     if isinstance(retr_model, PeftModel):
         retr_model.merge_adapter()
-        retr_model.get_base_model().save_pretrained(tmp_model_path)
-        retr_model.unmerge_adapter()
-    else:
-        retr_model.save_pretrained(tmp_model_path)
-    retr_tokenizer.save_pretrained(tmp_model_path)
 
-    # Define the SentenceTransformer architecture using the saved model
-    transformer = models.Transformer(tmp_model_path)
+    transformer = models.Transformer.__new__(models.Transformer)
+    torch.nn.Module.__init__(transformer)
+    transformer.config_keys = ["max_seq_length", "do_lower_case"]
+    transformer.do_lower_case = False
+    transformer.backend = "torch"
+    transformer.auto_model = retr_model
+    transformer.tokenizer = retr_tokenizer
+    transformer.max_seq_length = retriever_max_seq_length
+
     # Define pooling strategy (last-token pooling, required for decoder-style embedding models like Qwen)
     pooling = models.Pooling(
         transformer.get_word_embedding_dimension(),
@@ -483,11 +488,15 @@ def run_evaluation(
     ]
 
     # ******************** Cleanup ********************
+    if isinstance(retr_model, PeftModel):
+        retr_model.unmerge_adapter() # Undo the in-place merge to resume training with the LoRA delta active
     retr_model.train() # Set model back to train mode if it was changed by evaluator
-    torch.cuda.empty_cache() # Clear GPU cache
 
-    # Clean up temporary model files (optional, consider adding error handling)
-    shutil.rmtree(tmp_model_path)
+    # st_retr_model wraps the SAME live retr_model tensors (no second copy was made), so we
+    # only need to drop the wrapper objects and free the activation memory from embedding.
+    del st_retr_model, transformer, pooling, normalize, evaluator, corpus_embeddings
+    gc.collect()
+    torch.cuda.empty_cache() # Clear GPU cache
 
     return ranks, ndcg_scores_list, scores
 

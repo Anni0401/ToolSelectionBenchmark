@@ -184,7 +184,7 @@ echo "===================================================="
 
 cd "${PROJECT_ROOT}/wild-tool-bench"
 
-TOOLS_FILE="../wild-tool-bench/wtb/model_handler/api_inference/tool_schemas_cache.json"
+TOOLS_FILE="../wild-tool-bench/wtb/model_handler/api_inference/tool_schemas_cache.jsonl"
 
 if [ ! -f "${TOOLS_FILE}" ]; then
     echo "ERROR: Tool file does not exist:"

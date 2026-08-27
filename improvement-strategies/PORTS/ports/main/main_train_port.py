@@ -632,7 +632,12 @@ def train(dataset: Dataset,
         "retr_model_name": retr_model_name
     }
 
-    run_name = wandb_run_name or f"PORTS-{dataset_name}-{infer_model_name}-{retr_model_name}-{num_epochs}ep"
+    # Include the swept hyperparameters in the auto-generated name so grid/sweep runs
+    # (which all share the same dataset/model) remain distinguishable in the W&B UI.
+    run_name = wandb_run_name or (
+        f"PORTS-{dataset_name}-{infer_model_name}-{retr_model_name}"
+        f"-lr{learning_rate}-ep{num_epochs}-lam{lambda_loss}-b{beta}-g{gamma}"
+    )
     logger.info(f"Initializing W&B with project '{wandb_project_name}', run name: {run_name}")
     wandb.init(project=wandb_project_name, name=run_name)
     wandb.config.update(config)

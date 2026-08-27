@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ports-train
+#SBATCH --job-name=ports-sweep
 #SBATCH --partition=gpu-vram-94gb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -10,33 +10,48 @@
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
 
+# Runs a W&B sweep agent that pulls hyperparameter combinations one at a time
+# from an existing sweep (created beforehand with `wandb sweep sweep_ports.yaml`)
+# and trains PORTS with them via scripts/train_ports_sweep.sh.
+#
+# Usage:
+#   sbatch scripts/slurm_wandb_sweep_agent.sh <ENTITY/PROJECT/SWEEP_ID> [RUN_COUNT]
+#
+# Submit this multiple times to run several combinations in parallel (one GPU each);
+# each agent keeps requesting the next pending run until the sweep is exhausted.
+
 set -Eeuo pipefail
+
+if [ $# -lt 1 ]; then
+    echo "ERROR: missing sweep ID argument."
+    echo "Usage: sbatch $0 <ENTITY/PROJECT/SWEEP_ID> [RUN_COUNT]"
+    exit 1
+fi
+SWEEP_ID="$1"
+RUN_COUNT="${2:-}"  # optional: max number of runs this agent should execute
 
 ####################################################
 # Project paths
 ####################################################
 
-# main/ dir of the PORTS checkout (this script lives in main/scripts/)
-# NOTE: sbatch copies the submitted script into a job spool dir on the compute
-# node (e.g. /var/spool/slurmd/...), so BASH_SOURCE is unreliable under sbatch.
-# Prefer SLURM_SUBMIT_DIR (the dir you ran `sbatch` from), which should be the
-# PORTS checkout root (the "ports/" dir containing main/).
 if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
     PORTS_ROOT="${SLURM_SUBMIT_DIR}"
 else
     MAIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     PORTS_ROOT="$(dirname "${MAIN_ROOT}")"
 fi
-MAIN_ROOT="${PORTS_ROOT}"
-ENV_FILE="${MAIN_ROOT}/.env"
+MAIN_ROOT="${PORTS_ROOT}/main"
+ENV_FILE="${PORTS_ROOT}/.env"
 
-cd "${MAIN_ROOT}"
+
 
 echo "===================================================="
 echo "Job ID:        ${SLURM_JOB_ID:-N/A}"
 echo "Host:          $(hostname)"
 echo "PORTS root:    ${PORTS_ROOT}"
 echo "Main root:     ${MAIN_ROOT}"
+echo "Sweep ID:      ${SWEEP_ID}"
+echo "Run count:     ${RUN_COUNT:-unlimited}"
 echo "===================================================="
 
 ####################################################
@@ -56,8 +71,6 @@ source "${CONDA_BASE}/etc/profile.d/conda.sh"
 
 if ! conda activate "${CONDA_ENV_NAME}"; then
     echo "ERROR: conda environment '${CONDA_ENV_NAME}' does not exist."
-    echo "Create it first with:"
-    echo "  conda create -n ${CONDA_ENV_NAME} python=3.12 && conda activate ${CONDA_ENV_NAME} && pip install -r \"${PORTS_ROOT}/build/requirements.txt\""
     exit 1
 fi
 
@@ -95,6 +108,10 @@ export HF_HUB_DISABLE_XET=1
 export HF_HUB_DOWNLOAD_TIMEOUT=300
 export TOKENIZERS_PARALLELISM=false
 
+export WANDB_DIR="${WORK}/wandb"
+export WANDB_CACHE_DIR="${WORK}/wandb_cache"
+export WANDB_CONFIG_DIR="${WORK}/wandb_config"
+
 ####################################################
 # GPU info
 ####################################################
@@ -105,27 +122,11 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader
 echo ""
 
 ####################################################
-# Training parameters (override via env vars or sbatch --export=)
+# Run the W&B sweep agent
 ####################################################
 
-export DATASET_NAME="${DATASET_NAME:-toolbench}"
-export RETRIEVAL_MODEL_NAME="${RETRIEVAL_MODEL_NAME:-Qwen/Qwen3-Embedding-8B}"
-export INFERENCE_MODEL_PSEUDONAME="${INFERENCE_MODEL_PSEUDONAME:-llama3-8B}"
-export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2}"
-export MAX_TRAIN_SAMPLES="${MAX_TRAIN_SAMPLES:-10000}"
-export N_EPOCHS="${N_EPOCHS:-2}"
-
-echo "===================================================="
-echo "DATASET_NAME:               ${DATASET_NAME}"
-echo "RETRIEVAL_MODEL_NAME:       ${RETRIEVAL_MODEL_NAME}"
-echo "INFERENCE_MODEL_PSEUDONAME: ${INFERENCE_MODEL_PSEUDONAME}"
-echo "TRAIN_BATCH_SIZE:           ${TRAIN_BATCH_SIZE}"
-echo "MAX_TRAIN_SAMPLES:          ${MAX_TRAIN_SAMPLES}"
-echo "N_EPOCHS:                   ${N_EPOCHS}"
-echo "===================================================="
-
-####################################################
-# Run training
-####################################################
-
-bash scripts/train_ports.sh
+if [ -n "${RUN_COUNT}" ]; then
+    wandb agent --count "${RUN_COUNT}" "${SWEEP_ID}"
+else
+    wandb agent "${SWEEP_ID}"
+fi

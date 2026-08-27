@@ -1,6 +1,6 @@
 """
-2025.4.4
-2025.4.4
+2025.6.8
+2025.6.12
 4.51.3
 0.15.2
 __UNSLOTH_VERSIONING__
@@ -20,7 +20,7 @@ import torch
 import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
-from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
+from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -276,7 +276,7 @@ class _UnslothAlignPropTrainer(PyTorchModelHubMixin):
             dynamic_ncols=True,
         )
 
-        # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
+        # For mixed precision training we cast all non-trainable weights [vae, non-lora text_encoder and non-lora unet] to half-precision
         # as these weights are only used for inference, keeping weights in full precision is not required.
         if self.accelerator.mixed_precision == "fp16":
             inference_dtype = torch.float16

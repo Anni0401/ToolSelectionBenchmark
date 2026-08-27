@@ -1,0 +1,33 @@
+# W&B hyperparameter sweep for PORTS training.
+#
+# Usage (run from the `ports/main` directory so that `program:` resolves correctly):
+#   wandb sweep sweep_ports.yaml
+# This prints a sweep ID (ENTITY/PROJECT/SWEEP_ID). Then launch one or more agents
+# that pull runs from the queue, e.g. via SLURM:
+#   sbatch scripts/slurm_wandb_sweep_agent.sh <SWEEP_ID>
+# Submit the sbatch command multiple times to run several combinations in parallel
+# (each agent/job trains one combination at a time, then requests the next one).
+#
+# Grid: 3 (lr) * 2 (epochs) * 3 (lambda) * 2 (beta) * 2 (gamma) = 72 runs.
+
+program: scripts/train_ports_sweep.sh
+method: grid
+metric:
+  name: eval/cosine_ndcg_at_5
+  goal: maximize
+parameters:
+  lr:
+    values: [1e-6, 5e-6, 1e-5]
+  n_epochs:
+    values: [2, 5]
+  lambda_loss:
+    values: [0.1, 0.3, 0.5]
+  beta:
+    values: [0.5, 1.0]
+  gamma:
+    values: [0.5, 1.0]
+command:
+  - ${env}
+  - bash
+  - ${program}
+  - ${args}

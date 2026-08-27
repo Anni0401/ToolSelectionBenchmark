@@ -174,6 +174,18 @@ curl -s "http://localhost:${VLLM_EMBEDDING_PORT}/v1/models"
 echo
 
 ####################################################
+# Sync wild-tool-bench/.env so setup_openai_embeddings.py doesn't
+# override QWEN3_EMBEDDING_BASE_URL with a stale node from a previous job
+# (langgraph_app.py loads this .env with override=True).
+####################################################
+
+WTB_ENV_FILE="${PROJECT_ROOT}/wild-tool-bench/.env"
+
+if [ -f "${WTB_ENV_FILE}" ]; then
+    sed -i "s|^QWEN3_EMBEDDING_BASE_URL=.*|QWEN3_EMBEDDING_BASE_URL=${QWEN3_EMBEDDING_BASE_URL}|" "${WTB_ENV_FILE}"
+fi
+
+####################################################
 # Run offline tool embedding
 ####################################################
 

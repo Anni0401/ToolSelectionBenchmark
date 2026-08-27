@@ -27,6 +27,7 @@ This repository contains the code and datasets for reproducing the experiments d
 - [Using the Markdown File](#using-the-markdown-file)
 - [Script-based Training](#script-based-training)
 - [Sbatch-based Grid Search Training](#sbatch-based-grid-search-training)
+- [W\&B Sweep-based Hyperparameter Search](#wb-sweep-based-hyperparameter-search)
 - [Main Accuracy Results](#main-accuracy-results)
 - [Unsloth Integration](#unsloth-integration)
 
@@ -558,6 +559,33 @@ make replug USE_4BIT=false  # Uses Unsloth without quantization
 ```
 
 The integration is transparently handled in both training pipelines, so all existing scripts and commands will continue to work as before, but with improved performance.
+
+## W&B Sweep-based Hyperparameter Search
+
+In addition to the independent-job grid search above (`run_sbatch.sh`), the repo also supports a proper [W\&B Sweep](https://docs.wandb.ai/guides/sweeps) for PORTS, driven by a central `wandb agent` that pulls the next hyperparameter combination from a queue. Files:
+
+- `main/sweep_ports.yaml`: sweep definition (method `grid`, metric `eval/cosine_ndcg_at_5`) over `lr`, `n_epochs`, `lambda_loss`, `beta`, `gamma`.
+- `main/scripts/train_ports_sweep.sh`: entry point invoked by the agent; fixed (non-swept) defaults, with the swept values appended last so they override them.
+- `main/scripts/slurm_wandb_sweep_agent.sh`: SLURM job that runs `wandb agent <SWEEP_ID>` on a GPU node.
+
+### 1. Create the sweep
+
+```bash
+cd main
+wandb sweep sweep_ports.yaml
+```
+
+This prints a sweep ID in the form `ENTITY/PROJECT/SWEEP_ID`.
+
+### 2. Launch one or more agents on SLURM
+
+```bash
+sbatch scripts/slurm_wandb_sweep_agent.sh ENTITY/PROJECT/SWEEP_ID
+```
+
+Submit this command multiple times to run several combinations in parallel (each job/agent trains one combination at a time on its GPU, then requests the next pending one from the sweep). Optionally cap how many runs a single agent executes: `sbatch scripts/slurm_wandb_sweep_agent.sh ENTITY/PROJECT/SWEEP_ID 5`.
+
+The default grid (`1e-6,5e-6,1e-5` learning rates × `2,5` epochs × `0.1,0.3,0.5` lambda × `0.5,1.0` beta × `0.5,1.0` gamma, all varied independently) totals 72 runs. All runs log to the same W&B project/sweep, so results can be compared directly in the W&B UI (parallel coordinates plot, parameter importance, etc.). Adjust `main/sweep_ports.yaml` to change the grid or fixed parameters (e.g. `DATASET_NAME`, `RETRIEVAL_MODEL_NAME`) via environment variables in `train_ports_sweep.sh`.
 
 ## Main Accuracy Results
 

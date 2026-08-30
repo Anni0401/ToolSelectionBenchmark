@@ -915,7 +915,7 @@ class HierarchicalToolSelector(ToolSelector):
         
         # Log the selection results
         print(f"\n[HIERARCHICAL SELECTOR]")
-        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Query: {query}")
         print(f"  Available tools: {len(all_tools)}")
         print(f"  Selected tool names: {selected_names}")
         print(f"  Matched tools: {len(selected)}")
@@ -1047,32 +1047,94 @@ class ToolReActToolSelector(ToolSelector):
 
     def __init__(self, schema_cache_file: str = None, max_iter: int = 10):
         self.max_iter = int(os.getenv("LANGGRAPH_TOOLREAGT_MAX_ITER", str(max_iter)))
+        # Synthetic-distractor-only cache; WTB task tools come from the request
+        # and are the source of truth for their own `required` fields.
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
-            "tool_schemas_cache.json"
+            "tool_schemas_cache.jsonl"
         )
-        self.tools_cache = None
+        self.synthetic_tools_cache = []
         self.last_selection_metrics = {}
         self._embedding_retriever = Qwen3EmbeddingBasedToolSelector(top_k=5, schema_cache_file=self.schema_cache_file)
-        self._load_schema_cache()
+        self._load_synthetic_tools_cache()
 
-    def _load_schema_cache(self):
-        """Load all valid tools from schema cache file."""
-        if os.path.exists(self.schema_cache_file):
-            try:
-                with open(self.schema_cache_file, "r") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and "tools" in data:
-                        self.tools_cache = data["tools"]
+    @staticmethod
+    def _sanitize_tool(tool: dict) -> Optional[dict]:
+        """Convert a tool to the standard OpenAI function-tool schema.
+
+        Private benchmark metadata such as `_synthetic`/`_source_tool` is
+        intentionally not forwarded to the selector or the executor.
+        """
+        if not isinstance(tool, dict):
+            return None
+
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return None
+
+        name = str(func.get("name", "")).strip()
+        description = str(func.get("description", "")).strip()
+        parameters = func.get("parameters")
+
+        if not name or not description or not isinstance(parameters, dict):
+            return None
+
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": copy.deepcopy(parameters),
+            },
+        }
+
+    def _load_synthetic_tools_cache(self):
+        """Load ONLY synthetic distractor tools from tool_schemas_cache.jsonl."""
+        if not os.path.exists(self.schema_cache_file):
+            print(f"[WARNING] Synthetic schema cache not found for toolreagt: {self.schema_cache_file}")
+            self.synthetic_tools_cache = []
+            return
+
+        loaded_tools = []
+        try:
+            with open(self.schema_cache_file, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        print(f"[WARNING] Invalid JSON in synthetic tool cache line {line_no}: {exc}")
+                        continue
+                    if isinstance(entry, list):
+                        loaded_tools.extend(entry)
                     else:
-                        self.tools_cache = data if isinstance(data, list) else []
-                print(f"[TOOLREAGT SELECTOR] Loaded {len(self.tools_cache)} valid tools from schema cache")
-            except Exception as e:
-                print(f"[WARNING] Failed to load schema cache for toolreagt: {e}")
-                self.tools_cache = []
-        else:
-            print(f"[WARNING] Schema cache file not found for toolreagt: {self.schema_cache_file}")
-            self.tools_cache = []
+                        loaded_tools.append(entry)
+
+            seen_keys = set()
+            deduped_tools = []
+            duplicates = 0
+            for tool in loaded_tools:
+                clean_tool = self._sanitize_tool(tool)
+                if clean_tool is None:
+                    continue
+                func = clean_tool["function"]
+                key = (func["name"], " ".join(func["description"].split()).strip().lower())
+                if key in seen_keys:
+                    duplicates += 1
+                    continue
+                seen_keys.add(key)
+                deduped_tools.append(clean_tool)
+
+            self.synthetic_tools_cache = deduped_tools
+            print(
+                f"[TOOLREAGT SELECTOR] Loaded {len(loaded_tools)} synthetic tools from cache, "
+                f"deduplicated to {len(self.synthetic_tools_cache)} (removed {duplicates})"
+            )
+        except Exception as e:
+            print(f"[WARNING] Failed to load synthetic tool cache for toolreagt: {e}")
+            self.synthetic_tools_cache = []
 
     def _extract_full_conversation(self, messages: list) -> str:
         """Extract full multi-turn context for selector reasoning."""
@@ -1181,7 +1243,20 @@ class ToolReActToolSelector(ToolSelector):
 
     def select(self, messages: list, tools: list) -> list:
         """Run iterative ReAct-style retrieval and return mapped real tools."""
-        all_tools = self.tools_cache if self.tools_cache else tools
+        # WTB task tools are the source of truth, including their task-specific
+        # `required` overrides. Synthetic distractors fill out the candidate pool.
+        task_tools = []
+        for tool in tools or []:
+            clean_tool = self._sanitize_tool(tool)
+            if clean_tool is not None:
+                task_tools.append(clean_tool)
+
+        task_tool_names = {t["function"]["name"] for t in task_tools}
+        synthetic_tools = [
+            t for t in self.synthetic_tools_cache
+            if t["function"]["name"] not in task_tool_names
+        ]
+        all_tools = task_tools + synthetic_tools
         if not all_tools:
             return []
 
@@ -1285,7 +1360,13 @@ class ToolReActToolSelector(ToolSelector):
                 f"toolreagt selector reached max_iter={self.max_iter} without finalizing a tool list"
             )
 
-        selected_names = self._parse_final_tool_names(final_response_text)
+        try:
+            selected_names = self._parse_final_tool_names(final_response_text)
+        except ValueError as exc:
+            # Model refused or returned unparseable output; degrade to an empty
+            # selection instead of failing the whole task.
+            print(f"  [TOOLREAGT SELECTOR] WARNING: {exc}")
+            selected_names = []
 
         # Mapping exactly like hierarchical strategy: filter real tool objects by name.
         selected = [
@@ -1398,7 +1479,7 @@ class EmbeddingBasedToolSelector(ToolSelector):
         
         # Log the selection results
         print(f"\n[EMBEDDING SELECTOR]")
-        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Query: {query}")
         print(f"  Available tools: {len(tools)}")
         print(f"  Top-k: {self.top_k}")
         print(f"  Selected tools:")
@@ -1521,7 +1602,7 @@ class OpenAIEmbeddingWithLLMRerankerToolSelector(ToolSelector):
         
         # Log initial retrieval candidates
         print(f"\n[EMBEDDING + LLM RERANKER SELECTOR]")
-        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Query: {query}")
         print(f"\n  === EMBEDDING RETRIEVAL PHASE (Top-{len(tools)}) ===")
         for i, idx in enumerate(range(len(tools))):
             tool_name = tool_names[idx]
@@ -1969,7 +2050,7 @@ class OpenAIEmbeddingBasedToolSelector(ToolSelector):
         
         # Log the selection results
         print(f"\n[OPENAI EMBEDDING SELECTOR]")
-        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Query: {query}")
         print(f"  Total available tools: {len(all_tools)}")
         print(f"  Top-k (unique): {self.top_k}")
         print(f"  Cache hits: {cached_count}, Runtime computed: {missing_count}")
@@ -2368,7 +2449,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                     break
 
         print(f"\n[QWEN3 EMBEDDING SELECTOR]")
-        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Query: {query}")
         print(f"  Model: {self.model}")
         print(f"  Total available tools: {len(all_tools)}")
         print(f"  Top-k (unique): {self.top_k}")
@@ -2657,7 +2738,8 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
         props = params.get("properties", {})
         param_strs = []
         for p_name, p_info in list(props.items())[:5]:
-            p_desc = p_info.get("description", "")
+            # Some tool schemas store a list (e.g. anyOf/oneOf variants) instead of a dict here.
+            p_desc = p_info.get("description", "") if isinstance(p_info, dict) else ""
             param_strs.append(f"  {p_name}: {p_desc}" if p_desc else f"  {p_name}")
         doc = f"Tool: {name}\nDescription: {desc}"
         if param_strs:
@@ -2792,7 +2874,7 @@ class Qwen3RerankerBasedToolSelector(ToolSelector):
 
         print(f"\n[QWEN3 RERANKER SELECTOR]")
         print(f"  Model: {self.model}")
-        print(f"  Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        print(f"  Query: {query}")
         print(f"  Candidates scored: {len(tools)}")
 
         ranked_pairs = sorted(zip(scores, tools), key=lambda x: x[0], reverse=True)

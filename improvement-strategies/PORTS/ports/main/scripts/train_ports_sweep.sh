@@ -10,7 +10,7 @@
 set -e
 
 # Fixed (non-swept) defaults - override via env vars if needed.
-DATASET_NAME="${DATASET_NAME:-toolbench}"
+DATASET_NAME="${DATASET_NAME:-bfcl}"
 RETRIEVAL_MODEL_NAME="${RETRIEVAL_MODEL_NAME:-Qwen/Qwen3-Embedding-8B}"
 INFERENCE_MODEL_PSEUDONAME="${INFERENCE_MODEL_PSEUDONAME:-llama3-8B}"
 RETRIEVAL_MAX_SEQ_LEN="${RETRIEVAL_MAX_SEQ_LEN:-512}"

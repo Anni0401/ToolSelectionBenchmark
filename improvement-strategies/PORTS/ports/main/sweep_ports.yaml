@@ -8,10 +8,18 @@
 # Submit the sbatch command multiple times to run several combinations in parallel
 # (each agent/job trains one combination at a time, then requests the next one).
 #
-# Grid: 3 (lr) * 2 (epochs) * 3 (lambda) * 2 (beta) * 2 (gamma) = 72 runs.
+# Full grid would be 3 (lr) * 2 (epochs) * 3 (lambda) * 2 (beta) * 2 (gamma) * 3 (batch) = 216 runs,
+# so this uses random search instead of grid. Cap total runs via: wandb agent --count N <SWEEP_ID>
+# train_batch_size=64 requires the 2-GPU model split (retriever + inference LLM on separate GPUs,
+# see scripts/run_ports_train_sbatch.sh / slurm_wandb_sweep_agent.sh --gres=gpu:2).
+#
+# Dataset is NOT swept here - it's fixed via the DATASET_NAME env var read by
+# scripts/train_ports_sweep.sh (default: bfcl). Best hyperparameters are dataset-specific,
+# so start a FRESH sweep (`wandb sweep sweep_ports.yaml` -> new SWEEP_ID) whenever you
+# switch DATASET_NAME - never reuse an existing sweep/run history across datasets.
 
 program: scripts/train_ports_sweep.sh
-method: grid
+method: random
 metric:
   name: eval/cosine_ndcg_at_5
   goal: maximize
@@ -26,6 +34,8 @@ parameters:
     values: [0.5, 1.0]
   gamma:
     values: [0.5, 1.0]
+  train_batch_size:
+    values: [2, 24, 64]
 command:
   - ${env}
   - bash

@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --mem=94G
 #SBATCH --time=12:00:00
 #SBATCH --output=%x_%j.out
@@ -108,7 +108,7 @@ echo ""
 # Training parameters (override via env vars or sbatch --export=)
 ####################################################
 
-export DATASET_NAME="${DATASET_NAME:-toolbench}"
+export DATASET_NAME="${DATASET_NAME:-bfcl}"
 export RETRIEVAL_MODEL_NAME="${RETRIEVAL_MODEL_NAME:-Qwen/Qwen3-Embedding-8B}"
 export INFERENCE_MODEL_PSEUDONAME="${INFERENCE_MODEL_PSEUDONAME:-llama3-8B}"
 export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2}"

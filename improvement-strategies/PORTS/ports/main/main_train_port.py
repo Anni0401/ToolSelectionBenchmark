@@ -536,6 +536,7 @@ def train(dataset: Dataset,
            k_eval_values_accuracy: list = [1, 3, 5],
            k_eval_values_ndcg: list = [1, 3, 5],
            device: str = "cuda",
+           infer_device: str = None,
            wandb_project_name: str = "",
            wandb_run_name: str = "",
            save_strategy: str = "epoch",
@@ -588,6 +589,7 @@ def train(dataset: Dataset,
         k_eval_values_accuracy (list, optional): k values for Accuracy@k evaluation. Defaults to [1, 3, 5].
         k_eval_values_ndcg (list, optional): k values for NDCG@k evaluation. Defaults to [1, 3, 5].
         device (str, optional): Device to run training on ('cuda' or 'cpu'). Defaults to "cuda".
+        infer_device (str, optional): Device for the frozen inference LLM. Defaults to `device` (same GPU) when not set.
         wandb_project_name (str, optional): Project name for W&B logging. Defaults to "".
         wandb_run_name (str, optional): Run name for W&B logging (defaults to generated name if empty). Defaults to "".
         save_strategy (str, optional): When to save checkpoints ('epoch' or 'steps'). Defaults to "epoch".
@@ -597,6 +599,10 @@ def train(dataset: Dataset,
         weight_decay (float, optional): Weight decay for the AdamW optimizer. Defaults to 0.01.
         save_checkpoints (bool, optional): Whether to save model checkpoints during training. Defaults to False.
     """
+    # Default the inference LLM to the retriever's device when no second GPU was assigned
+    if infer_device is None:
+        infer_device = device
+
     # ******************** W&B Initialization & Config Logging ********************
     # Ensure only n_reembedding_steps is used if both are defined
     if n_reembedding_steps is not None:
@@ -831,7 +837,7 @@ def train(dataset: Dataset,
                 bs = queries["input_ids"].size(0)
 
                 # --- Compute Similarities ---
-                pos_similarity = compute_similarity(retr_model, queries, pos_docs).view(bs, -1) # [bs, 1]
+                pos_similarity = compute_similarity(retr_model, queries, pos_docs, device=device).view(bs, -1) # [bs, 1]
 
                 neg_similarity_list = []
                 n_neg_docs = neg_docs_processed["input_ids"].shape[1] # Number of negatives per query
@@ -841,7 +847,7 @@ def train(dataset: Dataset,
                     current_neg_data = {
                         k: neg_docs_processed[k][:, nid, :] for k in ['input_ids', 'attention_mask']
                     }
-                    this_neg_similarity = compute_similarity(retr_model, queries, current_neg_data).view(bs, -1) # [bs, 1]
+                    this_neg_similarity = compute_similarity(retr_model, queries, current_neg_data, device=device).view(bs, -1) # [bs, 1]
                     neg_similarity_list.append(this_neg_similarity)
                 
                 neg_similarity = torch.stack(neg_similarity_list, dim=-1) # Shape: [bs, 1, num_neg]
@@ -862,8 +868,8 @@ def train(dataset: Dataset,
                 # --- Prepare Inference Model Inputs ---
                 input_prompt_pos = batch["q_pos_prompt"]
                 input_prompt_neg = batch["q_neg_prompt"]
-                input_prompt_pos = {k : input_prompt_pos[k].to(device) for k in input_prompt_pos}
-                input_prompt_neg = [{k : neg_docs_trip[k].to(device) for k in neg_docs_trip} for neg_docs_trip in input_prompt_neg]
+                input_prompt_pos = {k : input_prompt_pos[k].to(infer_device) for k in input_prompt_pos}
+                input_prompt_neg = [{k : neg_docs_trip[k].to(infer_device) for k in neg_docs_trip} for neg_docs_trip in input_prompt_neg]
                 
                 # --- Compute Perplexities (Q) using Frozen LLM ---
                 pos_perplexity = []
@@ -879,7 +885,7 @@ def train(dataset: Dataset,
                         collate_fn=data_collator_completion) # Use the completion-only collator
                     
                     pos_data_batch = next(iter(pos_dataloader)) # Get the collated batch
-                    pos_data_batch = {k: v.to(device) for k, v in pos_data_batch.items()}
+                    pos_data_batch = {k: v.to(infer_device) for k, v in pos_data_batch.items()}
                     labels = pos_data_batch.pop("labels") # Labels prepared by collator
 
                     outputs_pos = infer_model(**pos_data_batch)
@@ -902,7 +908,7 @@ def train(dataset: Dataset,
                             batch_size=bs, 
                             collate_fn=data_collator_completion)))
                         
-                        neg_data = {k: v.to(device) for k, v in neg_data.items()}
+                        neg_data = {k: v.to(infer_device) for k, v in neg_data.items()}
                         labels = neg_data.pop("labels")
                         
                         outputs_neg = infer_model(**neg_data)
@@ -925,6 +931,7 @@ def train(dataset: Dataset,
                 
                 # --- Compute Q Distribution ---
                 Q = F.softmax(concat_perplexities, dim=-1) # Shape: [bs, 1 + num_neg]
+                Q = Q.to(device) # Move to the retriever's device (Q was computed on infer_device)
 
                 del concat_perplexities, pos_perplexity, neg_perplexity, neg_perplexity_list
                 torch.cuda.empty_cache()
@@ -1189,7 +1196,16 @@ def main():
 
     # ******************** Initial Setup ********************
     set_seed(args.seed) # Set seed for reproducibility
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    # If a second GPU is visible, put the frozen inference LLM on it so the retriever's
+    # GPU has more free VRAM for larger train_batch_size values. Falls back to sharing
+    # a single GPU (previous behavior) when only one is available.
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        infer_device = "cuda:1"
+        logger.info(f"Multiple GPUs detected ({torch.cuda.device_count()}): retriever on {device}, inference LLM on {infer_device}")
+    else:
+        infer_device = device
+        logger.info(f"Single GPU/CPU visible; retriever and inference LLM share {device}")
     logger.info(f"Using device: {device}")
     logger.info(f"Parsed arguments: {vars(args)}") # Log parsed arguments
 
@@ -1244,7 +1260,7 @@ def main():
         model_name=infer_model_name,
         max_seq_length=args.inference_max_seq_length,
         load_in_4bit=args.load_in_4bit,
-        device_map=device,
+        device_map=infer_device,
     )
     FastLanguageModel.for_inference(infer_model)
     logger.info(f"Successfully loaded inference model with Unsloth")
@@ -1405,6 +1421,7 @@ def main():
         "k_eval_values_accuracy" : args.k_eval_values_accuracy,
         "k_eval_values_ndcg" : args.k_eval_values_ndcg,
         "device" : device,
+        "infer_device" : infer_device,
         "wandb_project_name" : args.wandb_project_name,
         "wandb_run_name" : args.wandb_run_name,
         "save_strategy": args.save_strategy,

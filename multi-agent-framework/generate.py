@@ -11,7 +11,7 @@ from agent import user_single_tool, user_multi_tool, user_multi_tool_parallel, u
                   agent_ask, agent_answer, agent_answer_chat, \
                   planner, tool, \
                   checker_planner, checker_tool
-from utils import read_json_file_to_list, get_random_date, parse_answer, transform_train_data, logger, \
+from utils import load_tool_clusters, get_random_date, parse_answer, transform_train_data, logger, \
                   ask_user_for_help_tool, prepare_to_answer_tool
 from constant import DOTENV_PATH
 from datetime import datetime
@@ -244,17 +244,21 @@ def gen_one_data(tools, node_list, layer_num_total, agent_handle_to_model):
     return FAILED, messages_ret, tools, env_info, fetch_data_list
 
 
-def main(all_path_list, layer_num_total, agent_handle_to_model):
+def main(all_path_list, layer_num_total, agent_handle_to_model, tools_file=None, num_examples=None):
     language = os.getenv("LANGUAGE")
-    if language == "zh":
-        tools_all_list = read_json_file_to_list("tools/tools_zh.jsonl")
+    if tools_file:
+        tools_all_list = load_tool_clusters(tools_file)
+    elif language == "zh":
+        tools_all_list = load_tool_clusters("tools/tools_zh.jsonl")
     else:
-        tools_all_list = read_json_file_to_list("tools/tools_en.jsonl")
+        tools_all_list = load_tool_clusters("tools/tools_en.jsonl")
 
     current_time = datetime.now()  # 打印当前日期和时间
     formatted_time = current_time.strftime("%Y-%m-%d_%H:%M:%S")
 
-    for current_layer_path_list in all_path_list[layer_num_total - 1]:
+    path_pool = all_path_list[layer_num_total - 1]
+
+    for current_layer_path_list in path_pool:
         os.makedirs("result", exist_ok=True)
         fout = open(f"result/{formatted_time}_train.jsonl", "a+")
         fout_origin = open(f"result/{formatted_time}_train_origin.jsonl", "a+")
@@ -298,6 +302,16 @@ def gen_path(layer_num_total):
     return all_path_list
 
 
+def sample_random_paths(layer_num_total, num_examples):
+    """Draw `num_examples` random task-type paths of length `layer_num_total`,
+    without materializing the full 4^layer_num_total combinatorial tree."""
+    task_type_list = ["ST", "MT", "CQ", "CC"]
+    return [
+        [random.choice(task_type_list) for _ in range(layer_num_total)]
+        for _ in range(num_examples)
+    ]
+
+
 if __name__ == "__main__":
     load_dotenv(dotenv_path=DOTENV_PATH, verbose=True, override=True)  # Load the .env file
 
@@ -325,6 +339,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--temperature", type=float, default=0.0, help="Temperature"
     )
+    parser.add_argument(
+        "--tools-file", type=str, default=None,
+        help="Path to a tools jsonl file (clustered, like tools/tools_en.jsonl, or flat with "
+             "'_source_tool_id' grouping keys, like a synthetic tool_schemas_cache.jsonl). "
+             "Defaults to tools/tools_en.jsonl or tools/tools_zh.jsonl based on LANGUAGE."
+    )
+    parser.add_argument(
+        "--num-examples", type=int, default=None,
+        help="Total number of dialogs to generate (each with --layer-num-total turns). "
+             "Paths are sampled at random instead of enumerating all 4^layer-num-total "
+             "combinations. Omit to keep the old behavior of generating every combination "
+             "(only safe for small --layer-num-total values)."
+    )
     args = parser.parse_args()
 
     user_model_list = []
@@ -343,5 +370,6 @@ if __name__ == "__main__":
         "checker": checker_model(args.checker_model, args.temperature)
     }
 
-    all_path_list = gen_path(args.layer_num_total)
-    main(all_path_list, args.layer_num_total, agent_handle_to_model)
+    all_path_list = gen_path(args.layer_num_total) if args.num_examples is None \
+        else [None] * (args.layer_num_total - 1) + [sample_random_paths(args.layer_num_total, args.num_examples)]
+    main(all_path_list, args.layer_num_total, agent_handle_to_model, tools_file=args.tools_file, num_examples=args.num_examples)

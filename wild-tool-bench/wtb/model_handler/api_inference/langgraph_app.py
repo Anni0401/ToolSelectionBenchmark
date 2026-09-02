@@ -2,6 +2,7 @@ import os
 import json
 import copy
 import time
+import random
 import threading
 import urllib.request
 import urllib.error
@@ -82,6 +83,11 @@ def _get_tool_selection_log_path():
 def _get_tool_call_log_path():
     """Get the path to the tool call execution log file (per-strategy subfolder)."""
     return os.path.join(_get_log_dir(), "tool_call_logs.jsonl")
+
+
+def _get_query_rewrite_log_path():
+    """Get the path to the query-rewrite log file (per-strategy subfolder)."""
+    return os.path.join(_get_log_dir(), "query_rewrite_logs.jsonl")
 
 
 def _append_task_log(path: str, entry: dict):
@@ -188,6 +194,24 @@ def log_tool_selection(strategy_name: str, query: str, available_tools_count: in
             
     except Exception as e:
         print(f"[WARNING] Failed to log tool selection: {e}")
+
+
+def log_query_rewrite(original_query: str, rewritten_query: str, model: str, metrics: dict = None):
+    """Log a query rewrite so the before/after text can be inspected for analysis."""
+    try:
+        log_entry = {
+            "timestamp": time.time(),
+            "test_entry_id": getattr(_request_context, "test_entry_id", None),
+            "task_idx": getattr(_request_context, "task_idx", None),
+            "request_id": getattr(_request_context, "request_id", None),
+            "model": model,
+            "original_query": original_query,
+            "rewritten_query": rewritten_query,
+            **(metrics or {}),
+        }
+        _append_task_log(_get_query_rewrite_log_path(), log_entry)
+    except Exception as e:
+        print(f"[WARNING] Failed to log query rewrite: {e}")
 
 
 def _embedding_usage(response) -> dict:
@@ -1360,13 +1384,7 @@ class ToolReActToolSelector(ToolSelector):
                 f"toolreagt selector reached max_iter={self.max_iter} without finalizing a tool list"
             )
 
-        try:
-            selected_names = self._parse_final_tool_names(final_response_text)
-        except ValueError as exc:
-            # Model refused or returned unparseable output; degrade to an empty
-            # selection instead of failing the whole task.
-            print(f"  [TOOLREAGT SELECTOR] WARNING: {exc}")
-            selected_names = []
+        selected_names = self._parse_final_tool_names(final_response_text)
 
         # Mapping exactly like hierarchical strategy: filter real tool objects by name.
         selected = [
@@ -2287,6 +2305,26 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
             },
         }
 
+    def _build_all_tools(self, tools: list) -> list:
+        """Merge WTB task tools (source of truth) with synthetic distractors.
+
+        This is exactly the candidate pool the embedding retriever scores, so
+        it is also reused by subclasses that need to sample example tools
+        (e.g. for a query-rewriting prompt) from the same pool.
+        """
+        task_tools = []
+        for tool in tools or []:
+            clean_tool = self._sanitize_tool(tool)
+            if clean_tool is not None:
+                task_tools.append(clean_tool)
+
+        task_tool_names = {t["function"]["name"] for t in task_tools}
+        synthetic_tools = [
+            t for t in self.synthetic_tools_cache
+            if t["function"]["name"] not in task_tool_names
+        ]
+        return task_tools + synthetic_tools
+
     def _load_synthetic_tools_cache(self):
         """Load ONLY synthetic distractor tools from tool_schemas_cache.jsonl."""
         if not os.path.exists(self.schema_cache_file):
@@ -2351,20 +2389,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
                 "openai package is required. Install with: pip install openai"
             )
 
-        # WTB task tools are the source of truth, including their task-specific
-        # `required` overrides. Synthetic distractors fill out the candidate pool.
-        task_tools = []
-        for tool in tools or []:
-            clean_tool = self._sanitize_tool(tool)
-            if clean_tool is not None:
-                task_tools.append(clean_tool)
-
-        task_tool_names = {t["function"]["name"] for t in task_tools}
-        synthetic_tools = [
-            t for t in self.synthetic_tools_cache
-            if t["function"]["name"] not in task_tool_names
-        ]
-        all_tools = task_tools + synthetic_tools
+        all_tools = self._build_all_tools(tools)
 
         if not all_tools:
             print("[QWEN3 EMBEDDING SELECTOR] No tools available")
@@ -2590,6 +2615,183 @@ class Qwen3EmbeddingContextBasedToolSelector(Qwen3EmbeddingBasedToolSelector):
         if not full_conversation:
             return ""
         return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {full_conversation}"
+
+
+class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedToolSelector):
+    """Strategy: Query-rewriting LLM (Qwen3-8B) in front of Qwen3-Embedding-8B (full context).
+
+    A small LLM rewrites the user's request into a retrieval-friendlier form
+    (entities, operations, intermediate steps, identifiers, filters, whether a
+    tool must be called multiple times, ...) before it is embedded. The
+    rewriter is shown a handful of tool definitions randomly sampled from
+    exactly the same candidate pool the embedding retriever scores (task
+    tools + synthetic distractors), so it can mirror their terminology.
+
+    Only the text that gets embedded changes: the rewritten query replaces the
+    conversation text; ranking (embedding + cosine similarity) is otherwise
+    identical to ``Qwen3EmbeddingContextBasedToolSelector``.
+
+    The rewriter runs locally via vLLM; a failed or empty rewrite raises
+    instead of silently falling back to the original query, so broken
+    deployments are caught immediately rather than degrading silently.
+
+    Environment Variables:
+        QUERY_REWRITE_LLM_ENDPOINT: Chat-completions URL of the rewriting LLM (required)
+        QUERY_REWRITE_LLM_API_KEY:  API key sent to the rewriting LLM (default: EMPTY)
+        QUERY_REWRITE_LLM_MODEL:    Model name (default: Qwen/Qwen3-8B)
+        QUERY_REWRITE_MAX_OUTPUT_TOKENS: Max tokens for the rewrite (default: 300)
+        QUERY_REWRITE_NUM_SAMPLED_TOOLS: Number of example tools shown to the rewriter (default: 5)
+    """
+
+    REWRITE_PROMPT_TEMPLATE = (
+        "You rewrite user requests to improve retrieval of relevant tools.\n\n"
+        "Your task is NOT to answer the user and NOT to call any tools.\n\n"
+        "Rewrite the user request so that it clearly expresses:\n"
+        "- the entities involved;\n"
+        "- the intended operations;\n"
+        "- intermediate steps;\n"
+        "- identifiers that may need to be obtained;\n"
+        "- required filters, limits, dates, or arguments;\n"
+        "- whether the same tool must be called multiple times.\n\n"
+        "Use the terminology and operation style suggested by the example tool\n"
+        "definitions below. Do not invent tools or APIs. Preserve the user's\n"
+        "intent and all important argument values.\n\n"
+        "Example tool definitions:\n"
+        "{sampled_tool_documents}\n\n"
+        "Original user request:\n"
+        "{user_query}\n\n"
+        "Return only one rewritten retrieval query. Do not include explanations,\n"
+        "JSON, tool calls, or an answer."
+    )
+
+    def __init__(self, top_k: int = 5, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        super().__init__(top_k=top_k, cache_file=cache_file, tools_file=tools_file,
+                          schema_cache_file=schema_cache_file)
+        self.rewrite_endpoint = os.getenv("QUERY_REWRITE_LLM_ENDPOINT")
+        self.rewrite_api_key = os.getenv("QUERY_REWRITE_LLM_API_KEY", "EMPTY")
+        self.rewrite_model = os.getenv("QUERY_REWRITE_LLM_MODEL", "Qwen/Qwen3-8B")
+        self.rewrite_max_output_tokens = int(os.getenv("QUERY_REWRITE_MAX_OUTPUT_TOKENS", "300"))
+        self.num_sampled_tools = int(os.getenv("QUERY_REWRITE_NUM_SAMPLED_TOOLS", "5"))
+        self._rewrite_tools_pool = []
+        self.last_rewrite_metrics = {}
+
+    def select(self, messages: list, tools: list) -> list:
+        """Snapshot the candidate tool pool for sampling, then run the usual pipeline."""
+        self._rewrite_tools_pool = self._build_all_tools(tools)
+        selected = super().select(messages, tools)
+        self.last_selection_metrics = {
+            **self.last_selection_metrics,
+            **self.last_rewrite_metrics,
+            "rewrite_total_tokens": (
+                self.last_rewrite_metrics.get("rewrite_input_tokens", 0)
+                + self.last_rewrite_metrics.get("rewrite_output_tokens", 0)
+            ),
+        }
+        return selected
+
+    @staticmethod
+    def _format_sampled_tool(tool: dict) -> str:
+        func = tool.get("function", {})
+        name = func.get("name", "")
+        desc = func.get("description", "")
+        params = json.dumps(func.get("parameters", {}), ensure_ascii=False)
+        return f"- {name}: {desc}\n  parameters: {params}"
+
+    def _sample_tool_documents(self) -> str:
+        """Randomly sample example tools from the same pool the retriever scores."""
+        pool = self._rewrite_tools_pool
+        if not pool:
+            return "(no example tools available)"
+        k = min(self.num_sampled_tools, len(pool))
+        sampled = random.sample(pool, k)
+        return "\n".join(self._format_sampled_tool(t) for t in sampled)
+
+    def _rewrite_query(self, user_query: str) -> str:
+        """Call the query-rewriting LLM. Raises on any failure instead of falling back."""
+        if not self.rewrite_endpoint:
+            raise ValueError(
+                "QUERY_REWRITE_LLM_ENDPOINT must be set for "
+                "qwen3_query_rewrite_embedding_context mode"
+            )
+
+        prompt = self.REWRITE_PROMPT_TEMPLATE.format(
+            sampled_tool_documents=self._sample_tool_documents(),
+            user_query=user_query,
+        )
+
+        payload = {
+            "model": self.rewrite_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": self.rewrite_max_output_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "LangGraph-QueryRewriter/1.0",
+        }
+        if self.rewrite_api_key:
+            headers["Authorization"] = f"Bearer {self.rewrite_api_key}"
+
+        req = urllib.request.Request(self.rewrite_endpoint, data=body, headers=headers, method="POST")
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_data = exc.read().decode("utf-8")
+            raise RuntimeError(
+                f"Query-rewrite LLM request failed: {exc.code} {exc.reason} - {error_data[:200]}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Query-rewrite LLM request failed (connection): {exc.reason}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Query-rewrite LLM request failed: {exc}") from exc
+
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        content = ""
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if choices:
+            msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+            content = (msg.get("content") or "").strip()
+
+        import re as _re
+        content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
+
+        if not content:
+            raise RuntimeError(
+                f"Query-rewrite LLM returned an empty response: {str(data)[:200]}"
+            )
+
+        self.last_rewrite_metrics = {
+            "rewrite_input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "rewrite_output_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "rewrite_latency_s": time.perf_counter() - started,
+        }
+
+        print(f"[QUERY REWRITE] Original: {user_query[:200]}")
+        print(f"[QUERY REWRITE] Rewritten: {content[:200]}")
+        log_query_rewrite(user_query, content, self.rewrite_model, self.last_rewrite_metrics)
+
+        return content
+
+    def _extract_query(self, messages: list) -> str:
+        """Rewrite the full conversation context, then apply the Qwen3 instruction prefix."""
+        conversation_parts = []
+        for msg in messages:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                conversation_parts.append(f"[{role}]: {content}")
+        full_conversation = "\n".join(conversation_parts)[:2000]
+        if not full_conversation:
+            return ""
+
+        rewritten = self._rewrite_query(full_conversation)
+        return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {rewritten}"
 
 
 class Qwen3EmbeddingWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRerankerToolSelector):
@@ -3527,6 +3729,8 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return Qwen3EmbeddingBasedToolSelector(top_k=5)
     elif mode == "qwen3_embedding_context":
         return Qwen3EmbeddingContextBasedToolSelector(top_k=5)
+    elif mode == "qwen3_query_rewrite_embedding_context":
+        return Qwen3QueryRewriteEmbeddingContextToolSelector(top_k=5)
     elif mode == "qwen3_embedding_reranker":
         return Qwen3EmbeddingWithLLMRerankerToolSelector(top_k=5, initial_k=10)
     elif mode == "qwen3_embedding_context_reranker":

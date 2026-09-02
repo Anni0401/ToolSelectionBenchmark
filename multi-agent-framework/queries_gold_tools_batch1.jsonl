@@ -1,60 +1,55 @@
 {"query": "Please retrieve all component categories related to \"actuator\" and subsequently register a new component identified by part number ACT-202, manufactured by RoboDynamics, described as a high‑torque linear actuator.", "gold_tools": ["listComponentCategories", "registerNewComponent"]}
 {"query": "Please find controller component categories related to “controller”, list the relevant categories, and then register a new component with part number CTRL-101, manufacturer RoboDynamics, described as a precision motion controller for high‑torque linear actuators.", "gold_tools": ["listComponentCategories", "registerNewComponent"]}
 {"query": "Retrieve all component categories related to \"sensor\" and register a new component with part number SENS-550, manufacturer RoboDynamics, described as a high‑precision position sensor.", "gold_tools": ["listComponentCategories", "registerNewComponent"]}
-
 {"query": "Please register a new component with part number ACT-303, manufacturer RoboDynamics. The component is a high‑performance linear actuator designed for heavy‑duty applications, offering robust force and precise control.", "gold_tools": ["registerNewComponent"]}
 {"query": "Could you please provide a list of all available clan emblems, and let me know which ones are labeled in the language we usually use?", "gold_tools": ["listClanEmblems"]}
-
-
 {"query": "Could you list all the available clan emblems, but provide their names in Chinese?", "gold_tools": ["listClanEmblems"]}
 {"query": "Hey, find the top 5 Unsplash users named Alex and like the photo with ID abc123.", "gold_tools": ["searchUsers", "createPhotoLike"]}
 {"query": "Please retrieve the next 5 Unsplash users whose name or username includes \"Alex\" (i.e., users 6‑10) by searching the second page of results.", "gold_tools": ["searchUsers"]}
 {"query": "Please fetch the first 5 Unsplash users whose username contains \"Alex\" and like the photo with ID def456.", "gold_tools": ["searchUsers", "createPhotoLike"]}
 {"query": "Please search for the Unsplash user with username \"alex_urban\" to retrieve their full profile details.", "gold_tools": ["searchUsers"]}
 {"query": "Hey, ping 192.168.1.10 and 10.0.0.5, each with 3 echo requests, and tell me which host responds faster.", "gold_tools": ["pingHost"]}
-
 {"query": "Ping 8.8.8.8 with 5 echo requests and tell me the average latency.", "gold_tools": ["pingHost"]}
-
 {"query": "Grab a few photos of the Eiffel Tower (place_id: \"ChIJA3B...\") for my travel blog, limit to 5.", "gold_tools": ["getPlacePhotos"]}
-
 {"query": "I’d like to obtain a few photos of the Statue of Liberty for my upcoming blog post. The place_id for the Statue of Liberty is \"ChIJK0lV5Yc5Yg\". Could you please pull 3 photos for me?", "gold_tools": ["getPlacePhotos"]}
-
-
 {"query": "Hey, give me the accrued interest for security ID US2025B.", "gold_tools": ["calculateDebtInterestAccrual"]}
 {"query": "What will be the accrued interest for security ID US2025B as of its next coupon date (2025-02-15)?", "gold_tools": ["calculateDebtInterestAccrual"]}
-
 {"query": "Please calculate the accrued interest for Treasury security **US2030A** as of its upcoming coupon date, which is **2025-05-15**. Let me know the result when you have it.", "gold_tools": ["calculateDebtInterestAccrual"]}
 {"query": "Could you list the foreign countries in Europe that currently hold US public debt?", "gold_tools": ["listDebtHolderCountries"]}
-
 {"query": "Hey there, I'm working on a cryptic crossword. The secret word is **“cryptic”**. Please generate up to **30** anagrams for it. Thanks!", "gold_tools": ["getWordAnagrams"]}
-
 {"query": "Could you generate up to 20 anagrams for the word “conversation”?", "gold_tools": ["getWordAnagrams"]}
-
 {"query": "As a music curator for a European festival, I need to know if the track https://www.mixcloud.com/artist/track4 can be streamed in region_code NL, so please check its regional availability.", "gold_tools": ["checkTrackAvailability"]}
-
 {"query": "Please check whether the Mixcloud tracks https://www.mixcloud.com/artist/track4 and https://www.mixcloud.com/artist/track9 can be streamed in Italy (region_code IT) and Germany (region_code DE) respectively, and then provide a brief summary indicating which track is available in which region.", "gold_tools": ["checkTrackAvailability"]}
 {"query": "Please check if the Mixcloud track https://www.mixcloud.com/artist/track20 can be streamed in the United Kingdom (region_code GB), and also check the availability of another track (URL not provided) in the Netherlands (region_code NL).", "gold_tools": ["checkTrackAvailability"]}
-
 {"query": "Could you, as part of the upcoming market analysis, simultaneously export the regional sales dataset (ID: rs_2023) in CSV, the customer satisfaction survey dataset (ID: cs_2023) in JSON, and the product lifecycle dataset (ID: pl_2023) in XML, so that the cross‑functional team can integrate them into their reporting pipeline?", "gold_tools": ["exportDataset"]}
 {"query": "Could you also export the regional sales dataset (ID: rs_2023) in JSON format for the data science team?", "gold_tools": ["exportDataset"]}
-
 {"query": "Could you fetch recent industrial emissions data for a city of my choice (e.g., Detroit) and historical water‑quality data for a nearby river (e.g., the Detroit River) for the past year, and then show me an example of how these real‑world datasets could be visualized and discussed alongside the greenhouse‑effect story and home experiment I’m using in my middle‑school lesson?", "gold_tools": ["getIndustrialEmissions", "getWaterQualityHistorical"]}
 {"query": "Could you retrieve recent industrial emissions data for Chicago for the past six months and suggest a simple chart idea to compare it with the Detroit emissions data we already have?", "gold_tools": ["getIndustrialEmissions"]}
-
-
 {"query": "Hey, I'm organizing a weekend bike‑and‑tram adventure for a group of friends who love exploring hidden corners of the city. Could you pull together a comprehensive list of tram stops that are scattered across the less‑touristy neighborhoods, especially those that lie no more than 250 meters from any point we might be hanging out at, like cafés or parks? The neighborhoods we have in mind are Alcântara, Graça, and Campo de Ourique – all off‑the‑beaten‑path areas in Lisbon. For specific spots, picture the quiet riverside Café da Ribeira in Alcântara, the tucked‑away Jardim da Estrela near Graça, and the little Parque da Bela Vista in Campo de Ourique. Does that give you enough to locate the tram stops?", "gold_tools": ["listTramStops"]}
 {"query": "Could you provide the bike‑sharing station availability within 200 meters of each of the tram stops you listed (e.g., Alcântara‑Mar, Cais do Sodré, Ribeira das Naus, Graça, São Vicente, Campo de Ourique, etc.)? I’d like to know how many bikes and docks are currently free at those nearby stations.", "gold_tools": ["getBikeSharingAvailability"]}
-
-
-
 {"query": "Give me a Clark/Lake station ridership comparison (including recent ridership stats and contact information)", "gold_tools": ["getStationRidershipStats", "getStationContactInfo"]}
 {"query": "Give me Washington station recent ridership statistics and contact phone number", "gold_tools": ["getStationRidershipStats", "getStationContactInfo"]}
-
 {"query": "Please provide a concise 250‑character summary of the report located at https://news.org/policy/energy-plan, and simultaneously arrange for weekly notifications on the \"Energy Policy\" subject to be sent to policy@institute.org.", "gold_tools": ["generateArticleSummary", "subscribeTopicAlerts"]}
-
-
-
 {"query": "As the HR manager, I need a comprehensive view of the New York market: provide the list of job categories available there, determine the average salary for \"software engineer\" positions, and export the data for job IDs 111, 222, and 333 in JSON format.", "gold_tools": ["listJobCategories", "calculateAverageSalary", "exportJobData"]}
 {"query": "Could you list the job categories for San Francisco? Could you calculate the average salary for “data scientist” positions in New York? Could you export the job data for IDs 444 and 555 in CSV format?", "gold_tools": ["listJobCategories", "calculateAverageSalary", "exportJobData"]}
 {"query": "Could you list the job categories for Chicago? Could you calculate the average salary for “machine learning engineer” positions in New York? Could you export the job data for IDs 666 and 777 in JSON format?", "gold_tools": ["listJobCategories", "calculateAverageSalary", "exportJobData"]}
 {"query": "Could you list the job categories for Boston? Also, calculate the average salary for “DevOps engineer” positions in San Francisco, and export the job data for IDs 1010 and 1111 in JSON format.", "gold_tools": ["listJobCategories", "calculateAverageSalary", "exportJobData"]}
+{"query": "Please simulate a 301 redirect from `https://oldsite.com/product` to `https://newsite.com/product` and show the resulting status code and target URL.", "gold_tools": ["echoRedirect"]}
+{"query": "Generate a short-lived authentication token for my robot joke API. My userID is **user_ABC123**.", "gold_tools": ["generateAuthToken"]}
+{"query": "Please generate a short‑lived authentication token for user_ABC123 with an expiry of 1800 seconds, revoke access for deviceID device_789 belonging to the same user, and show an example of how the new token would be included in an HTTP Authorization header.", "gold_tools": ["generateAuthToken", "revokeDeviceAccess"]}
+{"query": "Generate a short‑lived authentication token for user_ABC123 with an expiry of 600 seconds, revoke access for deviceID = device_456 belonging to the same user, and provide a sample `curl` command that uses the newly created token in an `Authorization: Bearer <token>` header to call `https://api.example.com/jokes`.", "gold_tools": ["generateAuthToken", "revokeDeviceAccess"]}
+{"query": "As the project lead, I need a concise report that maps the IPC classifications of patents EP4000010, EP4000020, EP4000030, EP4000040, and EP4000050 to their respective technology domains, then summarizes how many patents fall into each domain; please ensure the data retrieval happens concurrently before the mapping and summarization steps.", "gold_tools": ["getPatentClassification"]}
+{"query": "Please retrieve the CPC (Cooperative Patent Classification) codes for patents EP4000010, EP4000020, EP4000030, EP4000040, and EP4000050, map each CPC code to its appropriate technology domain, and provide a concise summary showing how many patents fall into each domain. Ensure the CPC data retrieval is performed concurrently before the mapping and summarization steps.", "gold_tools": ["getPatentClassification"]}
+{"query": "Please retrieve the IPC classification for the patent that follows EP4000050 in the sequence, map its classification to the appropriate technology domain, and provide a brief summary of the result.", "gold_tools": ["getPatentClassification"]}
+{"query": "For my upcoming presentation on interactive UI elements, I would appreciate it if you could export the full set of typing animation settings for the SVG labeled 'interactiveDemo' in JSON format, ensuring that every parameter—such as speed, cursor style, and pause intervals—is captured accurately, so I can analyze the configuration and compare it with other prototypes.", "gold_tools": ["exportTypingAnimationSettings"]}
+{"query": "As a financial analyst, could you compare the 24‑hour trading volume and price change percentage for the three leading cryptocurrencies—Bitcoin (BTC), Ethereum (ETH), and Solana (SOL)—and then present the findings in a concise summary table?", "gold_tools": ["getAssetInfo"]}
+{"query": "Provide the latest market capitalization and circulating supply for Bitcoin (BTC), Ethereum (ETH), and Solana (SOL) in a concise table.", "gold_tools": ["getAssetInfo"]}
+{"query": "I'm creating an interactive coding challenge where the cursor within the typing SVG must adapt its blink speed based on difficulty; please configure the cursor blink accordingly, ensuring the visual feedback matches the challenge's pacing. The SVG I’m working with has the ID **challengeCursorSVG**. For the blink speed, I’d like it fairly quick—set the blink interval to **300 ms**. Could you apply that, please?", "gold_tools": ["setCursorBlinkRate"]}
+{"query": "For the medium difficulty level of the coding challenge, I’d like the cursor to blink at a 150 ms interval.  The SVG I want to target is **mediumChallengeSVG**. Please set its cursor blink interval to 150 ms as discussed.", "gold_tools": ["setCursorBlinkRate"]}
+{"query": "For the easy difficulty level of the coding challenge, I’d like the cursor to blink at a slower pace. The SVG I’m using is **easyChallengeSVG**, set the cursor blink rate to 500 ms for the SVG easyChallengeSVG.", "gold_tools": ["setCursorBlinkRate"]}
+{"query": "Hey, check the data gaps for the sensors in Manchester. The sensor type I want to examine is Air Quality. Could you check the data gaps from 2024-01-01 to 2024-07-31? Please ensure the dates are in YYYY‑MM‑DD format. Thanks.", "gold_tools": ["calculateSensorDataGap"]}
+{"query": "Could you list all sensor stations in Liverpool?", "gold_tools": ["listSensorStations"]}
+{"query": "Could you first list all sensor stations in Birmingham, then determine the data gaps for the Noise sensor type at each of those stations for the period 2023-10-01 to 2024-03-31, and finally create a maintenance record (dated 2024-02-15) for any station that shows a data‑gap period longer than 5 days? Please include the station IDs, the identified gap periods, and the maintenance notes.", "gold_tools": ["listSensorStations", "calculateSensorDataGap", "registerSensorMaintenance"]}
+{"query": "Hey, fetch the city details for postal code 2100 and the current time zone for location ID 12345 of a Danish location.", "gold_tools": ["getPostalCodeInfo", "getTimezoneInfo"]}
+{"query": "Which time zone applies to location ID 67890?", "gold_tools": ["getTimezoneInfo"]}
+{"query": "Please provide the city details for Danish postal code 8000.", "gold_tools": ["getPostalCodeInfo"]}

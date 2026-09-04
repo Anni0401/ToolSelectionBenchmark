@@ -1,0 +1,852 @@
+[
+  {
+    "original_query": "Please retrieve all component categories related to \"actuator\" and subsequently register a new component identified by part number ACT-202, manufactured by RoboDynamics, described as a high‑torque linear actuator.",
+    "rewrite1": "Retrieve component categories matching the term “actuator”, obtain the relevant category ID(s), and then register a new component with partNumber = ACT‑202, manufacturer = RoboDynamics, description = “high‑torque linear actuator”, linking it to the retrieved category ID(s).",
+    "rewrite2": "Fetch all component categories whose name or description includes the term “actuator”. After obtaining the relevant category IDs, register a new component with the following attributes: part number ACT‑202, manufacturer RoboDynamics, description “high‑torque linear actuator”, and associate it with the retrieved category IDs.",
+    "gold_tools": [
+      "listComponentCategories",
+      "registerNewComponent"
+    ]
+  },
+  {
+    "original_query": "Please find controller component categories related to “controller”, list the relevant categories, and then register a new component with part number CTRL-101, manufacturer RoboDynamics, described as a precision motion controller for high‑torque linear actuators.",
+    "rewrite1": "Retrieve all component categories whose name includes the keyword “controller”, list the matching category names, and subsequently create a new component with the following attributes: partNumber = “CTRL-101”, manufacturer = “RoboDynamics”, description = “precision motion controller for high‑torque linear actuators”. Use the category list from the first step when registering the component.",
+    "rewrite2": "Find component categories containing the keyword “controller” and list all matching category identifiers. Then, using one of those category IDs, register a new component with partNumber = “CTRL-101”, manufacturer = “RoboDynamics”, description = “precision motion controller for high‑torque linear actuators”.",
+    "gold_tools": [
+      "listComponentCategories",
+      "registerNewComponent"
+    ]
+  },
+  {
+    "original_query": "Retrieve all component categories related to \"sensor\" and register a new component with part number SENS-550, manufacturer RoboDynamics, described as a high‑precision position sensor.",
+    "rewrite1": "Retrieve component categories filtered by the keyword “sensor”. Using the resulting category identifiers, register a new component with part_number = SENS-550, manufacturer = RoboDynamics, and description = “high‑precision position sensor”.",
+    "rewrite2": "**Entities**  \n- Component categories (related to the keyword “sensor”)  \n- New component to register  \n  * partNumber: **SENS-550**  \n  * manufacturer: **RoboDynamics**  \n  * description: **high‑precision position sensor**  \n\n**Intended operations**  \n1. **Retrieve** all component categories that match the term “sensor”.  \n2. **Register** a new component using the retrieved category information (if a category identifier is required) together with the supplied part number, manufacturer, and description.  \n\n**Intermediate steps / identifiers**  \n- Obtain the list of matching category identifiers (or names) from step 1.  \n- Use one of those identifiers (or the full category list) as an argument when creating the new component in step 2.  \n\n**Required arguments / filters**  \n- Retrieval: filter = keyword “sensor”. No limits, dates, or pagination specified.  \n- Registration:  \n  * partNumber = “SENS-550” (required)  \n  * manufacturer = “RoboDynamics” (required)  \n  * description = “high‑precision position sensor” (required)  \n  * category identifier(s) obtained from step 1 (required if the registration API expects a category reference)  \n\n**Tool usage**  \n- Call the retrieval operation **once** to get the relevant categories.  \n- Call the component‑registration operation **once**, supplying the part number, manufacturer, description, and the category identifier(s) retrieved in the first call.",
+    "gold_tools": [
+      "listComponentCategories",
+      "registerNewComponent"
+    ]
+  },
+  {
+    "original_query": "Please register a new component with part number ACT-303, manufacturer RoboDynamics. The component is a high‑performance linear actuator designed for heavy‑duty applications, offering robust force and precise control.",
+    "rewrite1": "Register a new component with the following details: partNumber = \"ACT-303\", manufacturer = \"RoboDynamics\", description = \"high‑performance linear actuator designed for heavy‑duty applications, offering robust force and precise control\".",
+    "rewrite2": "Register a new Component with the following attributes: partNumber = \"ACT-303\", manufacturer = \"RoboDynamics\", description = \"high‑performance linear actuator designed for heavy‑duty applications, offering robust force and precise control\".",
+    "gold_tools": [
+      "registerNewComponent"
+    ]
+  },
+  {
+    "original_query": "Could you please provide a list of all available clan emblems, and let me know which ones are labeled in the language we usually use?",
+    "rewrite1": "Retrieve all clan emblems and filter the results to include only those whose label‑language matches the language we normally use.",
+    "rewrite2": "Retrieve all clan emblems; then filter the results to include only those whose label language matches the user’s default language. Include each emblem’s identifier and its language label.",
+    "gold_tools": [
+      "listClanEmblems"
+    ]
+  },
+  {
+    "original_query": "Could you list all the available clan emblems, but provide their names in Chinese?",
+    "rewrite1": "List all clan emblems and return each emblem’s name in Chinese.",
+    "rewrite2": "listDatasets(category=\"clan emblems\")",
+    "gold_tools": [
+      "listClanEmblems"
+    ]
+  },
+  {
+    "original_query": "Hey, find the top 5 Unsplash users named Alex and like the photo with ID abc123.",
+    "rewrite1": "Search Unsplash for users with the name “Alex”, retrieve the top 5 users ranked by popularity (e.g., followers or likes), and then perform a like operation on the photo whose ID is “abc123”.",
+    "rewrite2": "Retrieve up to 5 Unsplash user profiles where the user’s name equals “Alex”. After obtaining those user identifiers, invoke a “like” action on the Unsplash photo with the identifier abc123. Include the user‑list limit (5) and the exact photo ID (abc123) in the respective steps.",
+    "gold_tools": [
+      "searchUsers",
+      "createPhotoLike"
+    ]
+  },
+  {
+    "original_query": "Please retrieve the next 5 Unsplash users whose name or username includes \"Alex\" (i.e., users 6‑10) by searching the second page of results.",
+    "rewrite1": "Search Unsplash users where the name or username contains “Alex”, page = 2, results per page = 5 (to return users 6‑10).",
+    "rewrite2": "Retrieve Unsplash users where the‑name‑or‑username **contains “Alex”**, using the second page of results, and return exactly the next 5 entries (users 6‑10). Include parameters:  \n- search term: “Alex”  \n- page: 2  \n- limit: 5.",
+    "gold_tools": [
+      "searchUsers"
+    ]
+  },
+  {
+    "original_query": "Please fetch the first 5 Unsplash users whose username contains \"Alex\" and like the photo with ID def456.",
+    "rewrite1": "Search Unsplash users where `username` CONTAINS \"Alex\", retrieve the first 5 results, extract each resulting `userId`, and for each extracted `userId` invoke the “like‑photo” operation on the photo with `photoId` = \"def456\".",
+    "rewrite2": "listUnsplashUsers(filter: username contains \"Alex\", limit: 5) → retrieve up to 5 user IDs; for each retrieved userId, call likePhoto(photoId: \"def456\").",
+    "gold_tools": [
+      "searchUsers",
+      "createPhotoLike"
+    ]
+  },
+  {
+    "original_query": "Please search for the Unsplash user with username \"alex_urban\" to retrieve their full profile details.",
+    "rewrite1": "Retrieve full profile details for the Unsplash user with username \"alex_urban\".",
+    "rewrite2": "searchUnsplashUserProfile: {\"username\":\"alex_urban\"}",
+    "gold_tools": [
+      "searchUsers"
+    ]
+  },
+  {
+    "original_query": "Hey, ping 192.168.1.10 and 10.0.0.5, each with 3 echo requests, and tell me which host responds faster.",
+    "rewrite1": "Entities: host 192.168.1.10 and host 10.0.0.5.  \nOperation: perform an ICMP ping to each host, sending exactly 3 echo requests per host.  \nIntermediate steps: record the response time for each of the 3 replies, calculate a representative latency (e.g., average or minimum) per host.  \nIdentifiers to obtain: the latency metric for each host.  \nFilters/limits: limit the ping count to 3 per host.  \nTool usage: the ping operation must be invoked twice (once for each IP) with the same parameters (count = 3).  \nResult: compare the two latency values and return the IP address of the host that responded faster.",
+    "rewrite2": "searchDataAPIEndpoints {\n  \"query\": \"ping host\",\n  \"limit\": 2\n}",
+    "gold_tools": [
+      "pingHost"
+    ]
+  },
+  {
+    "original_query": "Ping 8.8.8.8 with 5 echo requests and tell me the average latency.",
+    "rewrite1": "Ping operation: target IP = 8.8.8.8, echo request count = 5, then calculate and return the average latency of the replies.",
+    "rewrite2": "Target IP: 8.8.8.8  \nOperation: send 5 ICMP echo (ping) requests to the target.  \nPost‑processing: calculate and return the average latency (round‑trip time) from the 5 responses.",
+    "gold_tools": [
+      "pingHost"
+    ]
+  },
+  {
+    "original_query": "Grab a few photos of the Eiffel Tower (place_id: \"ChIJA3B...\") for my travel blog, limit to 5.",
+    "rewrite1": "Retrieve up to 5 photos for the location identified by place_id \"ChIJA3B…\" (Eiffel Tower) for use in a travel blog.",
+    "rewrite2": "Entity: Place (Eiffel Tower) identified by place_id \"ChIJA3B...\".  \nOperation: Retrieve photos associated with this place.  \nParameters: limit = 5.  \nNo intermediate steps or additional identifiers required; a single retrieval operation with the specified limit.",
+    "gold_tools": [
+      "getPlacePhotos"
+    ]
+  },
+  {
+    "original_query": "I’d like to obtain a few photos of the Statue of Liberty for my upcoming blog post. The place_id for the Statue of Liberty is \"ChIJK0lV5Yc5Yg\". Could you please pull 3 photos for me?",
+    "rewrite1": "Retrieve three photos linked to the place with identifier `place_id = \"ChIJK0lV5Yc5Yg\"` (Statue of Liberty) for use in a blog post. Include the place_id as the required identifier and set a limit of 3 photos to be returned.",
+    "rewrite2": "Obtain 3 photos for the entity with place_id “ChIJK0lV5Yc5Yg”.",
+    "gold_tools": [
+      "getPlacePhotos"
+    ]
+  },
+  {
+    "original_query": "Hey, give me the accrued interest for security ID US2025B.",
+    "rewrite1": "Retrieve the accrued interest for the security with identifier security_id = \"US2025B\".",
+    "rewrite2": "Identify security with ID \"US2025B\" and retrieve its accrued interest amount.",
+    "gold_tools": [
+      "calculateDebtInterestAccrual"
+    ]
+  },
+  {
+    "original_query": "What will be the accrued interest for security ID US2025B as of its next coupon date (2025-02-15)?",
+    "rewrite1": "Calculate the accrued interest for the security identified by **security_id = \"US2025B\"**, using the **date = \"2025-02-15\"** (its next coupon date).",
+    "rewrite2": "Retrieve the accrued interest for security ID US2025B as of its next coupon date 2025‑02‑15.",
+    "gold_tools": [
+      "calculateDebtInterestAccrual"
+    ]
+  },
+  {
+    "original_query": "Please calculate the accrued interest for Treasury security **US2030A** as of its upcoming coupon date, which is **2025-05-15**. Let me know the result when you have it.",
+    "rewrite1": "No defined tool matches the request to calculate accrued interest for a Treasury security, so the request cannot be rewritten using the available tool definitions.",
+    "rewrite2": "Retrieve data for Treasury security with identifier **US2030A** (including coupon rate, coupon frequency, day‑count convention, last coupon payment date, and settlement convention). Then, using the upcoming coupon date **2025‑05‑15**, calculate the accrued interest for that security as of that date. The operation requires:\n- Entity: Treasury security US2030A  \n- Required fields: coupon rate, coupon frequency, day‑count basis, last coupon date, payment/settlement conventions  \n- Target date for accrual: 2025‑05‑15  \n- Intermediate step: compute accrued interest based on the fetched security parameters and the target date.",
+    "gold_tools": [
+      "calculateDebtInterestAccrual"
+    ]
+  },
+  {
+    "original_query": "Could you list the foreign countries in Europe that currently hold US public debt?",
+    "rewrite1": "Retrieve the dataset of countries that hold US public debt, then:\n1. Exclude the United States itself to keep only foreign holders.  \n2. Filter the remaining countries to those located in Europe.  \n3. Return the names of those European countries (and optionally their debt‑holdings amounts).",
+    "rewrite2": "Query the collection “us_public_debt_holders” with filter { \"region\": \"Europe\", \"holder_type\": \"foreign\", \"debt_status\": \"current\" } and retrieve the distinct “country” values for all matching records.",
+    "gold_tools": [
+      "listDebtHolderCountries"
+    ]
+  },
+  {
+    "original_query": "Hey there, I'm working on a cryptic crossword. The secret word is **“cryptic”**. Please generate up to **30** anagrams for it. Thanks!",
+    "rewrite1": "Generate up to 30 anagrams for the word **“cryptic.”**",
+    "rewrite2": "Generate up to 30 anagrams for the word “cryptic”.",
+    "gold_tools": [
+      "getWordAnagrams"
+    ]
+  },
+  {
+    "original_query": "Could you generate up to 20 anagrams for the word “conversation”?",
+    "rewrite1": "N/A",
+    "rewrite2": "Generate up to 20 anagrams for the word “conversation”.",
+    "gold_tools": [
+      "getWordAnagrams"
+    ]
+  },
+  {
+    "original_query": "As a music curator for a European festival, I need to know if the track https://www.mixcloud.com/artist/track4 can be streamed in region_code NL, so please check its regional availability.",
+    "rewrite1": "Track URL: https://www.mixcloud.com/artist/track4  \nOperation: Verify streaming availability in region_code NL.  \nRequired identifier: region_code = \"NL\".  \nNo additional filters or limits.",
+    "rewrite2": "Check the streaming availability of the track at https://www.mixcloud.com/artist/track4 for the region identified by code \"NL\".",
+    "gold_tools": [
+      "checkTrackAvailability"
+    ]
+  },
+  {
+    "original_query": "Please check whether the Mixcloud tracks https://www.mixcloud.com/artist/track4 and https://www.mixcloud.com/artist/track9 can be streamed in Italy (region_code IT) and Germany (region_code DE) respectively, and then provide a brief summary indicating which track is available in which region.",
+    "rewrite1": "Check Mixcloud streaming availability by:\n1. Calling **getPlatformSupportedRegions** with `platform=\"Mixcloud\"` to retrieve the list of supported region codes.\n2. Filtering the returned regions for `region_code=\"IT\"` and `region_code=\"DE\"`.\n3. Mapping the filtered results to the two tracks (track ID = track4 ↔ Italy, track ID = track9 ↔ Germany).\n4. Summarizing which track is available in which region based on the presence of the respective region codes.",
+    "rewrite2": "Retrieve streaming availability for Mixcloud track https://www.mixcloud.com/artist/track4 in region IT, and for Mixcloud track https://www.mixcloud.com/artist/track9 in region DE; then produce a brief summary indicating which track is available in which region.",
+    "gold_tools": [
+      "checkTrackAvailability"
+    ]
+  },
+  {
+    "original_query": "Please check if the Mixcloud track https://www.mixcloud.com/artist/track20 can be streamed in the United Kingdom (region_code GB), and also check the availability of another track (URL not provided) in the Netherlands (region_code NL).",
+    "rewrite1": "Check streaming availability for the Mixcloud track at https://www.mixcloud.com/artist/track20 in region GB, and check streaming availability for another Mixcloud track (URL unspecified) in region NL.",
+    "rewrite2": "downloadCoverArt(item_url=\"https://www.mixcloud.com/artist/track20\") // intended to verify streaming availability in region GB; downloadCoverArt(item_url=\"<track_url_not_provided>\") // intended to verify streaming availability in region NL.",
+    "gold_tools": [
+      "checkTrackAvailability"
+    ]
+  },
+  {
+    "original_query": "Could you, as part of the upcoming market analysis, simultaneously export the regional sales dataset (ID: rs_2023) in CSV, the customer satisfaction survey dataset (ID: cs_2023) in JSON, and the product lifecycle dataset (ID: pl_2023) in XML, so that the cross‑functional team can integrate them into their reporting pipeline?",
+    "rewrite1": "Retrieve the dataset with ID rs_2023 in CSV format; retrieve the dataset with ID cs_2023 in JSON format; and retrieve the dataset with ID pl_2023 in XML format, executing all three export operations concurrently for integration into the reporting pipeline.",
+    "rewrite2": "exportDataset:\n{\n  \"operations\": [\n    {\"dataset_id\": \"rs_2023\", \"export_format\": \"CSV\"},\n    {\"dataset_id\": \"cs_2023\", \"export_format\": \"JSON\"},\n    {\"dataset_id\": \"pl_2023\", \"export_format\": \"XML\"}\n  ],\n  \"execution_mode\": \"parallel\"\n}",
+    "gold_tools": [
+      "exportDataset"
+    ]
+  },
+  {
+    "original_query": "Could you also export the regional sales dataset (ID: rs_2023) in JSON format for the data science team?",
+    "rewrite1": "Export the dataset with ID \"rs_2023\" in JSON format for the data science team.",
+    "rewrite2": "Export the dataset with identifier “rs_2023” in JSON format for the data science team.",
+    "gold_tools": [
+      "exportDataset"
+    ]
+  },
+  {
+    "original_query": "Could you fetch recent industrial emissions data for a city of my choice (e.g., Detroit) and historical water‑quality data for a nearby river (e.g., the Detroit River) for the past year, and then show me an example of how these real‑world datasets could be visualized and discussed alongside the greenhouse‑effect story and home experiment I’m using in my middle‑school lesson?",
+    "rewrite1": "Retrieve industrial emissions data for the specified city (e.g., Detroit) covering the most recent 12‑month period; retrieve historical water‑quality data for the specified nearby river (e.g., the Detroit River) covering the same 12‑month period; then generate an example visualization that juxtaposes the two datasets and compose a discussion that links the visualized trends to the greenhouse‑effect narrative and the middle‑school home experiment you are teaching.",
+    "rewrite2": "Fetch recent industrial emissions data for the chosen city (e.g., Detroit) covering the last 12 months, fetch historical water‑quality data for the nearby river (e.g., Detroit River) for the same 12‑month period, then generate an example visualization that combines both datasets and outlines how they can be discussed in a middle‑school lesson alongside the greenhouse‑effect narrative and the corresponding home experiment.",
+    "gold_tools": [
+      "getIndustrialEmissions",
+      "getWaterQualityHistorical"
+    ]
+  },
+  {
+    "original_query": "Could you retrieve recent industrial emissions data for Chicago for the past six months and suggest a simple chart idea to compare it with the Detroit emissions data we already have?",
+    "rewrite1": "Obtain Chicago’s municipality identifier, then invoke calculateCarbonEmissions with municipalityId set to that identifier, activityLevel='industrial', and a date range covering the most recent six months; using the resulting Chicago emissions data together with the existing Detroit emissions data, propose a simple comparative chart (such as a side‑by‑side bar chart or line chart) that visualizes monthly industrial emissions for both cities over the same period.",
+    "rewrite2": "- Retrieve industrial emissions data for the city **Chicago** covering the most recent six‑month period (startDate = today − 6 months, endDate = today).  \n- Retrieve the existing Detroit emissions dataset (identifier = detroit_emissions) for the same six‑month period.  \n- Compare the two time‑series and propose a simple visualization (e.g., a dual‑line chart showing monthly emission totals for Chicago vs. Detroit).",
+    "gold_tools": [
+      "getIndustrialEmissions"
+    ]
+  },
+  {
+    "original_query": "Hey, I'm organizing a weekend bike‑and‑tram adventure for a group of friends who love exploring hidden corners of the city. Could you pull together a comprehensive list of tram stops that are scattered across the less‑touristy neighborhoods, especially those that lie no more than 250 meters from any point we might be hanging out at, like cafés or parks? The neighborhoods we have in mind are Alcântara, Graça, and Campo de Ourique – all off‑the‑beaten‑path areas in Lisbon. For specific spots, picture the quiet riverside Café da Ribeira in Alcântara, the tucked‑away Jardim da Estrela near Graça, and the little Parque da Bela Vista in Campo de Ourique. Does that give you enough to locate the tram stops?",
+    "rewrite1": "Call **getPublicTransportRoutesByRegion** with:  \n- `region`: \"Lisbon\"  \n- `transportMode`: \"tram\"  \n- `includeSchedule`: \"false\"\n\nThen, from the returned tram routes extract all tram stops and **filter** them to keep only stops whose geographic coordinates are **≤ 250 meters** from any of the following target locations (identified by name and neighbourhood):  \n\n1. **Café da Ribeira** – Alcântara  \n2. **Jardim da Estrela** – Graça  \n3. **Parque da Bela Vista** – Campo de Ourique  \n\nReturn the filtered list of tram stops (e.g., stop name and coordinates).",
+    "rewrite2": "Use **listParkingSpots** three times, each time supplying a `bbox` that defines a square of approximately 500 m (250 m radius) around the target location:\n\n1. **Alcântara – Café da Ribeira**  \n   - Compute a bounding box around the café’s coordinates (minLon, minLat, maxLon, maxLat) that extends ≈0.0025 ° lon/lat in each direction (≈250 m).  \n   - Call `listParkingSpots` with `bbox` set to this value.\n\n2. **Graça – Jardim da Estrela**  \n   - Compute a similar 250 m‑radius bounding box around the garden’s coordinates.  \n   - Call `listParkingSpots` with this `bbox`.\n\n3. **Campo de Ourique – Parque da Bela Vista**  \n   - Compute a 250 m‑radius bounding box around the park’s coordinates.  \n   - Call `listParkingSpots` with this `bbox`.\n\nEach call will return the locations (including tram stops, if present) within the specified 250 m radius of the listed cafés/parks in the three off‑beat neighborhoods.",
+    "gold_tools": [
+      "listTramStops"
+    ]
+  },
+  {
+    "original_query": "Could you provide the bike‑sharing station availability within 200 meters of each of the tram stops you listed (e.g., Alcântara‑Mar, Cais do Sodré, Ribeira das Naus, Graça, São Vicente, Campo de Ourique, etc.)? I’d like to know how many bikes and docks are currently free at those nearby stations.",
+    "rewrite1": "Identify the tram stops: Alcântara‑Mar, Cais do Sodré, Ribeira das Naus, Graça, São Vicente, Campo de Ourique, etc. For each stop, obtain its location coordinates, then retrieve all bike‑sharing stations located within a 200 meter radius of those coordinates. For every nearby station, return the current count of free bikes and free docks.",
+    "rewrite2": "Retrieve bike‑sharing stations that are located within 200 meters of each listed tram stop (entities: tram stops – Alcântara‑Mar, Cais do Sodré, Ribeira das Naus, Graça, São Vicente, Campo de Ourique, etc.).  \n\nSteps:  \n1. Identify each tram stop by its name (or internal stop ID if required).  \n2. For each stop, query the bike‑sharing system for all stations whose geographic coordinates satisfy distance ≤ 200 m from the stop’s coordinates.  \n3. For each qualifying station, return the current availability metrics: number of bikes free and number of docks free.  \n\nOutput should be a list keyed by tram‑stop name, each entry containing the nearby station IDs (or names) with their corresponding free‑bike and free‑dock counts. No additional text or formatting needed.",
+    "gold_tools": [
+      "getBikeSharingAvailability"
+    ]
+  },
+  {
+    "original_query": "Give me a Clark/Lake station ridership comparison (including recent ridership stats and contact information)",
+    "rewrite1": "Retrieve recent ridership statistics (e.g., last 12 months) and contact information for the two transit stations named “Clark” and “Lake”, then compare the ridership numbers of the two stations and include each station’s contact details in the comparison.",
+    "rewrite2": "Fetch recent ridership statistics (most recent reporting period) and contact information (phone, email, address) for the transit station identified by the name “Clark/Lake”. Then fetch the same data for the station identified by the name “Lake”. Finally, produce a side‑by‑side comparison of the two stations’ ridership counts and contact details.",
+    "gold_tools": [
+      "getStationRidershipStats",
+      "getStationContactInfo"
+    ]
+  },
+  {
+    "original_query": "Give me Washington station recent ridership statistics and contact phone number",
+    "rewrite1": "Entity: Washington transit station  \nOperation 1: Retrieve recent ridership statistics for the identified station.  \nOperation 2: Retrieve the station’s contact phone number.  \nSteps:  \n1. Resolve the station identifier for “Washington”.  \n2. Using that identifier, query the ridership dataset for the most recent statistics (e.g., latest month or quarter).  \n3. Using the same identifier, query the contact information dataset for the station’s phone number.  \nNo limits or date filters were specified beyond “recent”. Both operations may require calling the same underlying data service twice (once for ridership, once for contact).",
+    "rewrite2": "listStationFacilities { stationId: \"Washington\", facilityType: \"ridership\" }\n→ listStationFacilities { stationId: \"Washington\", facilityType: \"phone\" }",
+    "gold_tools": [
+      "getStationRidershipStats",
+      "getStationContactInfo"
+    ]
+  },
+  {
+    "original_query": "Please provide a concise 250‑character summary of the report located at https://news.org/policy/energy-plan, and simultaneously arrange for weekly notifications on the \"Energy Policy\" subject to be sent to policy@institute.org.",
+    "rewrite1": "Fetch the report at URL https://news.org/policy/energy-plan, generate a concise summary limited to 250 characters, then configure a recurring weekly notification titled “Energy Policy” to be sent to the email address policy@institute.org.",
+    "rewrite2": "Fetch the document at https://news.org/policy/energy-plan, extract its content, and generate a 250‑character summary; then configure a weekly notification titled “Energy Policy” to be emailed to policy@institute.org.",
+    "gold_tools": [
+      "generateArticleSummary",
+      "subscribeTopicAlerts"
+    ]
+  },
+  {
+    "original_query": "As the HR manager, I need a comprehensive view of the New York market: provide the list of job categories available there, determine the average salary for \"software engineer\" positions, and export the data for job IDs 111, 222, and 333 in JSON format.",
+    "rewrite1": "Market: New York  \nOperations:  \n1. List all job categories offered in this market.  \n2. Filter positions where title = “software engineer” and calculate the average salary for those positions.  \n3. Retrieve the records for job IDs 111, 222, and 333 and export the result in JSON format.",
+    "rewrite2": "No matching tool definitions are available to fulfill the request for listing job categories, calculating average software engineer salary, and exporting specific job IDs.",
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "original_query": "Could you list the job categories for San Francisco? Could you calculate the average salary for “data scientist” positions in New York? Could you export the job data for IDs 444 and 555 in CSV format?",
+    "rewrite1": "List job categories for city = \"San Francisco\". Compute average salary for position = \"data scientist\" in city = \"New York\". Export job records with IDs = [444, 555] in CSV format.",
+    "rewrite2": "Retrieve job categories for the city **San Francisco**; then retrieve salary information for positions with the title **“data scientist”** in the city **New York**, compute the average salary across those records; finally retrieve the complete job records for the IDs **444** and **555** and format the result as a CSV file.",
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "original_query": "Could you list the job categories for Chicago? Could you calculate the average salary for “machine learning engineer” positions in New York? Could you export the job data for IDs 666 and 777 in JSON format?",
+    "rewrite1": "Retrieve job categories where city = “Chicago”; then fetch all job listings with title = “machine learning engineer” and city = “New York” and compute the average of their salary fields; finally get the full job records for IDs 666 and 777 and output them in JSON format.",
+    "rewrite2": "Retrieve the list of job categories for the city Chicago; calculate the average salary for positions titled “machine learning engineer” in the city New York; and export the job records with IDs 666 and 777 in JSON format.",
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "original_query": "Could you list the job categories for Boston? Also, calculate the average salary for “DevOps engineer” positions in San Francisco, and export the job data for IDs 1010 and 1111 in JSON format.",
+    "rewrite1": "Fetch the list of job categories for the city **Boston**; calculate the average salary for positions titled **“DevOps engineer”** filtered to the city **San Francisco**; and retrieve the job records with IDs **1010** and **1111**, exporting the results in JSON format.",
+    "rewrite2": "Retrieve job categories for city = \"Boston\"; calculate average salary for position = \"DevOps engineer\", city = \"San Francisco\"; export job data for IDs = \"1010,1111\" in format = \"json\".",
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "original_query": "Please simulate a 301 redirect from `https://oldsite.com/product` to `https://newsite.com/product` and show the resulting status code and target URL.",
+    "rewrite1": "Simulate a 301 redirect from the source URL “https://oldsite.com/product” to the target URL “https://newsite.com/product”, and return the resulting HTTP status code (301) and the final target URL.",
+    "rewrite2": "submitUrlForReview(url=\"https://oldsite.com/product\", reason=\"Simulate a 301 redirect to https://newsite.com/product and return the resulting status code and target URL\")",
+    "gold_tools": [
+      "echoRedirect"
+    ]
+  },
+  {
+    "original_query": "Generate a short-lived authentication token for my robot joke API. My userID is **user_ABC123**.",
+    "rewrite1": "Generate a short‑lived authentication token for the robot‑joke API, providing the user identifier **user_ABC123**.",
+    "rewrite2": "Action: Generate a short‑lived authentication token  \nResource: Robot Joke API  \nParameters:  \n  • userId = \"user_ABC123\"  \nConstraints: none (no limits, filters, or dates)  \nExecution: single request (no multiple calls required)",
+    "gold_tools": [
+      "generateAuthToken"
+    ]
+  },
+  {
+    "original_query": "Please generate a short‑lived authentication token for user_ABC123 with an expiry of 1800 seconds, revoke access for deviceID device_789 belonging to the same user, and show an example of how the new token would be included in an HTTP Authorization header.",
+    "rewrite1": "User ID: user_ABC123  \nOperations:  \n1. Generate a short‑lived authentication token for this user with an expiry of 1800 seconds.  \n2. Revoke access for deviceID device_789 that is associated with the same user.  \n3. Provide an example HTTP Authorization header showing how the newly generated token would be included (e.g., `Authorization: Bearer <token>`).",
+    "rewrite2": "Generate a short‑lived authentication token for user `user_ABC123` with an expiry of 1800 seconds; revoke access for device `device_789` that belongs to the same user; then provide an example HTTP Authorization header showing how the newly created token would be included (e.g., `Authorization: Bearer <token>`).",
+    "gold_tools": [
+      "generateAuthToken",
+      "revokeDeviceAccess"
+    ]
+  },
+  {
+    "original_query": "Generate a short‑lived authentication token for user_ABC123 with an expiry of 600 seconds, revoke access for deviceID = device_456 belonging to the same user, and provide a sample `curl` command that uses the newly created token in an `Authorization: Bearer <token>` header to call `https://api.example.com/jokes`.",
+    "rewrite1": "Generate short‑lived authentication token for user_id = \"user_ABC123\" with expiry = 600 seconds → token; revoke device access for device_id = \"device_456\" belonging to the same user_id; construct sample `curl` command `curl -H \"Authorization: Bearer <token>\" https://api.example.com/jokes` using the newly created token.",
+    "rewrite2": "Create a short‑lived authentication token for user user_ABC123 with an expiration of 600 seconds; then revoke the access permissions for device device_456 that belongs to the same user; finally, construct a sample `curl` command that includes the newly created token in an `Authorization: Bearer <token>` header to call `https://api.example.com/jokes`.",
+    "gold_tools": [
+      "generateAuthToken",
+      "revokeDeviceAccess"
+    ]
+  },
+  {
+    "original_query": "As the project lead, I need a concise report that maps the IPC classifications of patents EP4000010, EP4000020, EP4000030, EP4000040, and EP4000050 to their respective technology domains, then summarizes how many patents fall into each domain; please ensure the data retrieval happens concurrently before the mapping and summarization steps.",
+    "rewrite1": "Concurrently retrieve the IPC classifications for patents EP4000010, EP4000020, EP4000030, EP4000040, and EP4000050; map each retrieved classification to its corresponding technology domain; then aggregate and report the number of patents that fall into each technology domain.",
+    "rewrite2": "Retrieve the IPC classifications for patents EP4000010, EP4000020, EP4000030, EP4000040, and EP4000050 (performing these look‑ups concurrently). Then map each obtained IPC code to its corresponding technology domain and produce a summary that lists each domain with the count of patents that belong to it.",
+    "gold_tools": [
+      "getPatentClassification"
+    ]
+  },
+  {
+    "original_query": "Please retrieve the CPC (Cooperative Patent Classification) codes for patents EP4000010, EP4000020, EP4000030, EP4000040, and EP4000050, map each CPC code to its appropriate technology domain, and provide a concise summary showing how many patents fall into each domain. Ensure the CPC data retrieval is performed concurrently before the mapping and summarization steps.",
+    "rewrite1": "The requested operation (retrieving CPC codes for specific patents, mapping them to technology domains, and summarizing counts) does not match any of the available tool definitions. Therefore, a rewritten retrieval query cannot be generated using the provided tools.",
+    "rewrite2": "Concurrently retrieve the CPC classification codes for the patents EP4000010, EP4000020, EP4000030, EP4000040, and EP4000050; then map each obtained CPC code to its appropriate technology domain; finally provide a concise summary indicating how many patents fall into each domain.",
+    "gold_tools": [
+      "getPatentClassification"
+    ]
+  },
+  {
+    "original_query": "Please retrieve the IPC classification for the patent that follows EP4000050 in the sequence, map its classification to the appropriate technology domain, and provide a brief summary of the result.",
+    "rewrite1": "Retrieve the identifier of the patent that immediately follows EP4000050 in the patent sequence; query the patent database for that patent’s IPC (International Patent Classification) code; map the obtained IPC code to its corresponding technology domain; and generate a brief summary describing the technology domain associated with the retrieved IPC classification. No repeated tool calls are required—each step is performed once in the order specified.",
+    "rewrite2": "Retrieve the IPC classification for the patent whose number immediately follows EP4000050 (i.e., EP4000051), map each IPC code to its corresponding technology domain, and return a concise summary of the resulting technology domain mapping.",
+    "gold_tools": [
+      "getPatentClassification"
+    ]
+  },
+  {
+    "original_query": "For my upcoming presentation on interactive UI elements, I would appreciate it if you could export the full set of typing animation settings for the SVG labeled 'interactiveDemo' in JSON format, ensuring that every parameter—such as speed, cursor style, and pause intervals—is captured accurately, so I can analyze the configuration and compare it with other prototypes.",
+    "rewrite1": "Export the complete typing animation configuration for the SVG element with ID “interactiveDemo” in JSON format, ensuring all parameters (including speed, cursor style, pause intervals, and any other settings) are captured.",
+    "rewrite2": "Retrieve the complete typing‑animation configuration for the SVG element identified as “interactiveDemo”. Include every parameter—such as speed, cursor style, pause intervals, and any other animation settings—and return the data in JSON format. No additional filtering or pagination is required, and a single retrieval operation suffices.",
+    "gold_tools": [
+      "exportTypingAnimationSettings"
+    ]
+  },
+  {
+    "original_query": "As a financial analyst, could you compare the 24‑hour trading volume and price change percentage for the three leading cryptocurrencies—Bitcoin (BTC), Ethereum (ETH), and Solana (SOL)—and then present the findings in a concise summary table?",
+    "rewrite1": "Retrieve the 24‑hour trading volume and the 24‑hour price‑change percentage for the three cryptocurrencies identified by symbols **BTC**, **ETH**, and **SOL**; then compile the data into a concise summary table with columns: Symbol, 24‑h Volume, 24‑h % Change.",
+    "rewrite2": "Retrieve 24‑hour trading volume and 24‑hour price change percentage for the cryptocurrency symbols BTC, ETH, and SOL, then compile the three results into a concise summary table.",
+    "gold_tools": [
+      "getAssetInfo"
+    ]
+  },
+  {
+    "original_query": "Provide the latest market capitalization and circulating supply for Bitcoin (BTC), Ethereum (ETH), and Solana (SOL) in a concise table.",
+    "rewrite1": "Fetch the latest `market_capitalization` and `circulating_supply` for each cryptocurrency entity identified by the symbols **BTC**, **ETH**, and **SOL**, then format the results into a single concise table (columns: Symbol, Market Capitalization, Circulating Supply). No additional filters or date ranges are needed; the query should target the most recent available data for each symbol. The same data‑retrieval operation must be performed separately for each of the three symbols and the results combined.",
+    "rewrite2": "Retrieve the latest market capitalization and circulating supply for the cryptocurrency entities Bitcoin (BTC), Ethereum (ETH), and Solana (SOL), and present the three results in a concise table.",
+    "gold_tools": [
+      "getAssetInfo"
+    ]
+  },
+  {
+    "original_query": "I'm creating an interactive coding challenge where the cursor within the typing SVG must adapt its blink speed based on difficulty; please configure the cursor blink accordingly, ensuring the visual feedback matches the challenge's pacing. The SVG I’m working with has the ID **challengeCursorSVG**. For the blink speed, I’d like it fairly quick—set the blink interval to **300 ms**. Could you apply that, please?",
+    "rewrite1": "Configure the blink interval of the cursor in the SVG element with ID “challengeCursorSVG” to 300 ms, ensuring the cursor’s blink speed matches a fairly quick pacing for the interactive coding challenge.",
+    "rewrite2": "No available tool matches the request to modify the blink interval of an SVG element with ID challengeCursorSVG.",
+    "gold_tools": [
+      "setCursorBlinkRate"
+    ]
+  },
+  {
+    "original_query": "For the medium difficulty level of the coding challenge, I’d like the cursor to blink at a 150 ms interval.  The SVG I want to target is **mediumChallengeSVG**. Please set its cursor blink interval to 150 ms as discussed.",
+    "rewrite1": "Target SVG: mediumChallengeSVG  \nContext: medium difficulty coding challenge  \nOperation: set cursor blink interval to 150 ms.",
+    "rewrite2": "Target SVG: **mediumChallengeSVG**  \nAction: set the cursor’s blink interval to **150 ms**.  \nNo additional identifiers, filters, limits, or intermediate steps are required; a single operation on this SVG is sufficient.",
+    "gold_tools": [
+      "setCursorBlinkRate"
+    ]
+  },
+  {
+    "original_query": "For the easy difficulty level of the coding challenge, I’d like the cursor to blink at a slower pace. The SVG I’m using is **easyChallengeSVG**, set the cursor blink rate to 500 ms for the SVG easyChallengeSVG.",
+    "rewrite1": "Identify the SVG entity named **easyChallengeSVG** (retrieve its identifier if required).  \nThen, for that SVG, update the cursor blink rate property to **500 ms** specifically for the **easy** difficulty level of the coding challenge.",
+    "rewrite2": "Modify the SVG identified by **easyChallengeSVG** to set its cursor blink interval to **500 ms**. This requires locating the SVG resource with ID `easyChallengeSVG` and updating its cursor‑blink‑rate property to the value `500`.",
+    "gold_tools": [
+      "setCursorBlinkRate"
+    ]
+  },
+  {
+    "original_query": "Hey, check the data gaps for the sensors in Manchester. The sensor type I want to examine is Air Quality. Could you check the data gaps from 2024-01-01 to 2024-07-31? Please ensure the dates are in YYYY‑MM‑DD format. Thanks.",
+    "rewrite1": "Check data gaps for Air Quality sensors located in Manchester for the period from 2024‑01‑01 to 2024‑07‑31.",
+    "rewrite2": "Retrieve data gaps for sensors of type **Air Quality** in **Manchester** for the date range **2024-01-01** to **2024-07-31** (YYYY‑MM‑DD).",
+    "gold_tools": [
+      "calculateSensorDataGap"
+    ]
+  },
+  {
+    "original_query": "Could you list all sensor stations in Liverpool?",
+    "rewrite1": "listSensorStations {\n  city: \"Liverpool\"\n}",
+    "rewrite2": "Retrieve all sensor stations where the location field (or city attribute) equals \"Liverpool\". No additional identifiers are needed; apply a filter on the city/name field set to Liverpool and return the full list of matching stations.",
+    "gold_tools": [
+      "listSensorStations"
+    ]
+  },
+  {
+    "original_query": "Could you first list all sensor stations in Birmingham, then determine the data gaps for the Noise sensor type at each of those stations for the period 2023-10-01 to 2024-03-31, and finally create a maintenance record (dated 2024-02-15) for any station that shows a data‑gap period longer than 5 days? Please include the station IDs, the identified gap periods, and the maintenance notes.",
+    "rewrite1": "Entity: sensor stations in Birmingham.  \nStep 1: List all stations to obtain their station IDs.  \nStep 2: For each station ID, retrieve Noise‑sensor data for the interval 2023‑10‑01 to 2024‑03‑31, calculate consecutive missing‑data intervals, and identify any gap periods whose duration exceeds 5 days.  \nStep 3: For every station with a gap > 5 days, create a maintenance record dated 2024‑02‑15 that includes the station ID, the identified gap period(s), and a maintenance note describing the data‑gap.",
+    "rewrite2": "1. Retrieve all sensor stations with a location of Birmingham (and capture each station’s stationId).  \n2. For every stationId obtained, query the data‑gap information for the **Noise** sensor type, using the date range startDate = 2023‑10‑01 and endDate = 2024‑03‑31.  \n3. Examine each gap returned; if any gap period for a station exceeds 5 days, create a maintenance record dated 2024‑02‑15 that includes:  \n   – stationId  \n   – the identified gap start and end dates (the full gap period)  \n   – a maintenance note explaining that the gap exceeds the 5‑day threshold.  \n\n(Ensure the station list is obtained first, then the gap query is called once per stationId, and the maintenance‑record creation is performed only for stations meeting the >5‑day gap condition.)",
+    "gold_tools": [
+      "listSensorStations",
+      "calculateSensorDataGap",
+      "registerSensorMaintenance"
+    ]
+  },
+  {
+    "original_query": "Hey, fetch the city details for postal code 2100 and the current time zone for location ID 12345 of a Danish location.",
+    "rewrite1": "Obtain city details for the Danish postal code 2100, then retrieve the current time zone for the location with identifier 12345 (using the time‑zone lookup after the city lookup).",
+    "rewrite2": "Retrieve city details for the Danish location with postal code 2100, and retrieve the current time‑zone information for the Danish location with ID 12345.",
+    "gold_tools": [
+      "getPostalCodeInfo",
+      "getTimezoneInfo"
+    ]
+  },
+  {
+    "original_query": "Which time zone applies to location ID 67890?",
+    "rewrite1": "Retrieve the time zone for the location with ID 67890.",
+    "rewrite2": "Determine the applicable time zone for the location with ID 67890.",
+    "gold_tools": [
+      "getTimezoneInfo"
+    ]
+  },
+  {
+    "original_query": "Please provide the city details for Danish postal code 8000.",
+    "rewrite1": "Retrieve the city information (e.g., city name, region, population, and other relevant details) for the Danish postal code 8000.",
+    "rewrite2": "Fetch city information for postal code 8000 in Denmark (country DK); no additional filters, limits, or dates required.",
+    "gold_tools": [
+      "getPostalCodeInfo"
+    ]
+  },
+  {
+    "original_query": "Could you provide the allergen information for the main ingredient in pizza dough?",
+    "rewrite1": "Retrieve allergen information for the primary ingredient used in pizza dough, specifying the ingredient name as the identifier to obtain its list of allergens.",
+    "rewrite2": "Retrieve allergen information for the primary ingredient used in pizza dough, identifying the ingredient name and then obtaining its associated allergen list.",
+    "gold_tools": [
+      "getIngredientAllergenInfo"
+    ]
+  },
+  {
+    "original_query": "As the guild's strategist, I request a comprehensive enumeration of all skill levels associated with classId 'necromancer' per its description, and please ensure that the output includes unlock information so we can plan our progression roadmap accordingly.",
+    "rewrite1": "retrieveGuideline {\n  \"guidelineId\": \"necromancer_skill_levels\",\n  \"format\": \"json\"\n}",
+    "rewrite2": "listSkillLevels: {\"classId\":\"necromancer\",\"include_unlock_info\":true}",
+    "gold_tools": [
+      "listSkillLevels"
+    ]
+  },
+  {
+    "original_query": "I would like to (1) calculate the expected damage of the weapon with ID `soul_reaper` against the monster with ID `undead_golem` when the necromancer uses the **Soul Drain** skill (level 2), assuming an attack power modifier of `150%`; and (2) list all skill levels for the classId `paladin`, including unlock information, so we can compare progression paths between necromancers and paladins.",
+    "rewrite1": "Calculate expected damage using **calculateDamage** with:\n- weaponId = \"soul_reaper\"\n- monsterId = \"undead_golem\"\n- attackPower = \"150%\"\n- (implicit) necromancer’s skill = \"Soul Drain\", level = 2 (use as contextual modifier for damage)\n\nThen retrieve the full progression list for the class **paladin**, including each skill level and its unlock criteria (classId = \"paladin\"), so the resulting skill‑level data can be compared to the necromancer’s Soul Drain (level 2) progression.",
+    "rewrite2": "calculateDamage: parameters → {weaponId: \"soul_reaper\", monsterId: \"undead_golem\", skillName: \"Soul Drain\", skillLevel: 2, attackPowerModifier: \"150%\"}; then listSkillLevels: parameters → {classId: \"paladin\", includeUnlockInfo: true}.",
+    "gold_tools": [
+      "calculateDamage",
+      "listSkillLevels"
+    ]
+  },
+  {
+    "original_query": "Calculate the expected damage of weapon `soul_reaper` when using the Necromancer's Death Pact skill with an attack power modifier of 200%. Let's run the calculation against the monster with ID **undead_golem**.",
+    "rewrite1": "Compute the expected damage of weapon **soul_reaper** when applying the Necromancer “Death Pact” skill with an attack‑power modifier of 200 % against the monster identified by **undead_golem**.",
+    "rewrite2": "Retrieve the base damage and scaling parameters for weapon **soul_reaper**, fetch the damage multiplier and any additional effects of the Necromancer’s **Death Pact** skill with an attack‑power modifier of **200 %**, and obtain the defensive stats for monster **undead_golem**; then combine these values to calculate the expected damage output.",
+    "gold_tools": [
+      "calculateDamage"
+    ]
+  },
+  {
+    "original_query": "I need the submission guidelines for tax form 1120 for the fiscal year 2022.",
+    "rewrite1": "Retrieve submission guidelines for tax form 1120 with fiscal year set to 2022.",
+    "rewrite2": "Fetch submission guidelines for tax form 1120, filtered to fiscal year 2022.",
+    "gold_tools": [
+      "getTaxFormSubmissionGuidelines"
+    ]
+  },
+  {
+    "original_query": "I’d like to view the audit history for a taxpayer, the taxpayer ID is 987654321. If possible, could you pull the audit history covering the period from 2022‑01‑01 to 2022‑12‑31?",
+    "rewrite1": "Fetch audit history records for the Taxpayer entity with identifier 987654321, filtering the results to only include entries where the audit date falls between 2022‑01‑01 and 2022‑12‑31.",
+    "rewrite2": "Retrieve audit history for taxpayer ID 987654321, filtered to records dated 2022‑01‑01 through 2022‑12‑31.",
+    "gold_tools": [
+      "getTaxAuditHistory"
+    ]
+  },
+  {
+    "original_query": "Referring to audit ID **A2022005** which noted a depreciation discrepancy and a $12,500 tax adjustment, could you provide the filing guidelines for the tax form used to report such depreciation adjustments, and also give me a list of tax‑exempt organizations in the education sector for fiscal year 2022?",
+    "rewrite1": "**Retrieve filing guidelines for the depreciation‑adjustment tax form**  \n1. Locate audit record **A2022005** → extract the tax form identifier that was used to report the $12,500 depreciation discrepancy.  \n2. With the extracted tax form ID, request the official filing guidelines that detail how depreciation adjustments must be reported.\n\n**Retrieve tax‑exempt education organizations for FY 2022**  \n1. Query the tax‑exempt organization registry.  \n2. Apply filters: sector = “education”, fiscal_year = 2022.  \n3. Return the complete list of qualifying organizations.",
+    "rewrite2": "Using audit ID **A2022005**, first obtain the tax‑form identifier tied to the noted depreciation discrepancy and $12,500 tax adjustment, then retrieve the filing guidelines for that tax form; subsequently, request a list of tax‑exempt organizations filtered by sector = education and fiscal_year = 2022.",
+    "gold_tools": [
+      "getTaxFormSubmissionGuidelines",
+      "getTaxExemptOrganizationList"
+    ]
+  },
+  {
+    "original_query": "Could you please provide up to ten different variations for the client’s chosen name, taking into account the description of the request, the type of spelling changes, and any relevant parameters you might infer? The base name I’m interested in is **Alexander**.  \nI’d like to see up to **ten** different spelling variations, so please set the max_variations parameter to 10.  \nCould you generate those for me?",
+    "rewrite1": "Generate up to ten spelling variations for the base name **Alexander**, taking into account the request description and the desired type of spelling changes, with the parameter max_variations set to 10.",
+    "rewrite2": "Entity: client‑chosen name = \"Alexander\"  \nOperation: generate spelling variations  \nParameters: max_variations = 10, consider request description, type of spelling changes, and any inferred relevant parameters.",
+    "gold_tools": [
+      "generateNameVariations"
+    ]
+  },
+  {
+    "original_query": "Could you provide the top five male names in the United States?",
+    "rewrite1": "List the top five male names in the United States, ordered by popularity.",
+    "rewrite2": "Retrieve the list of the five most common male first names in the United States, ordered by popularity (top 5).",
+    "gold_tools": [
+      "listTopNamesByGender"
+    ]
+  },
+  {
+    "original_query": "Could you provide the top five male names in the country where the Great Wall is located?",
+    "rewrite1": "Retrieve the top 5 most common male given names, filtered by country = \"China\", ordered by popularity, with a limit of 5.",
+    "rewrite2": "Identify the country that contains the Great Wall (i.e., China); then retrieve the five most common male first names in that country, filtering by gender = male and applying a limit = 5.",
+    "gold_tools": [
+      "listTopNamesByGender"
+    ]
+  },
+  {
+    "original_query": "I'd like the top five male names for China, please.",
+    "rewrite1": "Retrieve the top five most common male given names for the country China, specifying gender = male and limit = 5.",
+    "rewrite2": "Retrieve a list of person names with the following parameters:\n- entity: given names\n- filter: country = \"China\", gender = \"male\"\n- limit: 5 (top five) \nNo intermediate steps or additional identifiers are required.",
+    "gold_tools": [
+      "listTopNamesByGender"
+    ]
+  },
+  {
+    "original_query": "Hey, could you tell me how much I'd pay in tolls if I drive from the university campus to the city outskirts, using a motorcycle?",
+    "rewrite1": "Calculate toll cost for a trip from the university campus to the city outskirts, specifying vehicle_type = motorcycle.",
+    "rewrite2": "Retrieve the toll cost for a motorcycle trip from the university campus to the city outskirts on 2026‑09‑03 by calling **getTicketFare** with the parameters: origin = \"university campus\", destination = \"city outskirts\", date = \"2026‑09‑03\".",
+    "gold_tools": [
+      "calculateTollCost"
+    ]
+  },
+  {
+    "original_query": "Could you compare the toll costs for traveling from the university campus to the city outskirts using a motorcycle versus a car, and also suggest which option is more cost‑effective overall? Please include a brief breakdown for each vehicle type.",
+    "rewrite1": "Retrieve toll cost data for the route from the university campus to the city outskirts for each vehicle type (motorcycle and car); calculate total toll expenses for each; compare the two totals; provide a brief cost breakdown per vehicle; and recommend the overall more cost‑effective transportation option.",
+    "rewrite2": "Retrieve toll cost data for the route from the university campus to the city outskirts for two vehicle types: motorcycle and car. For each vehicle type, obtain the total toll amount, list individual toll stations (if applicable) with their respective charges, and calculate the overall cost. Then compare the two totals and indicate which vehicle type is more cost‑effective overall, presenting a brief breakdown for each.",
+    "gold_tools": [
+      "calculateTollCost"
+    ]
+  },
+  {
+    "original_query": "Please calculate a round‑trip toll estimate and segment breakdown for traveling by **bus**. The trip starts at the University Campus and ends at the City Outskirts.",
+    "rewrite1": "Round‑trip bus toll estimate with segment breakdown for travel from **University Campus** to **City Outskirts** (including outbound segments, return segments, individual toll amounts per segment, and total round‑trip cost).",
+    "rewrite2": "**Entities**  \n- **Transport mode**: bus  \n- **Origin**: “University Campus”  \n- **Destination**: “City Outskirts”\n\n**Intended operations**  \n1. Retrieve the full bus route from the origin to the destination, broken into individual route segments.  \n2. For each segment, obtain any applicable toll fees.  \n3. Sum the tolls for a one‑way trip.  \n4. Multiply the one‑way total by 2 to get a round‑trip estimate.  \n5. Return the overall round‑trip toll amount together with a segment‑by‑segment toll breakdown.\n\n**Intermediate steps / identifiers**  \n- May need a route‑lookup identifier (e.g., a route ID) returned by the first retrieval to query tolls per segment.  \n- Each segment may require its own toll‑query call.\n\n**Filters / limits / dates**  \n- No date restrictions; current toll rates apply.  \n- No pagination or limit needed beyond the full route.\n\n**Tool usage**  \n- The route‑lookup operation may be called once to get all segments.  \n- The toll‑lookup operation will need to be called repeatedly—once for each segment—to build the breakdown.",
+    "gold_tools": [
+      "calculateTollCost"
+    ]
+  },
+  {
+    "original_query": "Could you retrieve and list all the image URLs from the article about sunrise over the mountains that we talked about? Here’s the article URL you need – https://example.com/articles/sunrise-mountains.",
+    "rewrite1": "Retrieve the web content at article_url = “https://example.com/articles/sunrise-mountains”, then parse the fetched HTML to extract and list all image URLs (src attributes) found within the article. Use one tool call to obtain the page content and a second tool call to extract the image URLs from that content. No additional filters, limits, or date parameters are required.",
+    "rewrite2": "generateUrlPreview with parameters { \"url\": \"https://example.com/articles/sunrise-mountains\" }",
+    "gold_tools": [
+      "listArticleImages"
+    ]
+  },
+  {
+    "original_query": "Please retrieve the image URLs from two articles—https://example.com/articles/sunrise-mountains and https://example.com/articles/mountain-twilight. After obtaining the URLs, combine them into a single list grouped by their source article and provide a brief description for each image based on its filename (e.g., “sunrise1.jpg” → “Sunrise over the peak”).",
+    "rewrite1": "No defined tool matches the request to retrieve image URLs from the specified articles.",
+    "rewrite2": "Fetch image URLs from the two article sources — https://example.com/articles/sunrise‑mountains and https://example.com/articles/mountain‑twilight. After extracting the URLs, create a single list where each entry includes: the originating article URL, the image URL, and a short description derived from the image filename (e.g., “sunrise1.jpg” → “Sunrise over the peak”). Group the entries by their source article. No additional filters, limits, or dates are required. The operation consists of two fetch steps (one per article) followed by a single aggregation step.",
+    "gold_tools": [
+      "listArticleImages"
+    ]
+  },
+  {
+    "original_query": "Could you kindly provide a list of all transportation and pedestrian layers available on the heritage map (mapId 'heritage2023'), and, in addition, search for museums in the historic district using the query 'museum' centered at '48.8566,2.3522' with a radius of 500 meters?",
+    "rewrite1": "Retrieve all layers of type “transportation” and “pedestrian” for mapId = `heritage2023`; then, using the same map, execute a spatial text search for features whose name matches the query `museum`, limited to the historic district, centered at latitude 48.8566 longitude 2.3522 with a radius of 500 meters.",
+    "rewrite2": "Retrieve all layers of type “transportation” and “pedestrian” for mapId = \"heritage2023\". Then perform a POI search with query = \"museum\", centered at latitude 48.8566 / longitude 2.3522, radius = 500 meters, constrained to the historic district.",
+    "gold_tools": [
+      "listMapLayers",
+      "searchPlace"
+    ]
+  },
+  {
+    "original_query": "Could you also find a nearby café or restaurant within a 300‑meter radius of the Centre Pompidou that offers vegetarian options, and provide its name, address, and a brief description?",
+    "rewrite1": "Find cafés or restaurants within a 300‑meter radius of the Centre Pompidou that offer vegetarian options, and return each venue’s name, address, and a brief description.",
+    "rewrite2": "Find nearby venues (entity type: café or restaurant) within a 300‑meter radius of the Centre Pompidou, filter for those that offer vegetarian options, and return the venue’s name, address, and a brief description.",
+    "gold_tools": [
+      "searchPlace"
+    ]
+  },
+  {
+    "original_query": "Please find a vegetarian‑friendly restaurant within a 200‑meter radius of Le Potager du Marais (24 Rue Rambuteau) that offers outdoor seating, and give its name, address, and a brief description.",
+    "rewrite1": "Identify the location (coordinates) of Le Potager du Marais at 24 Rue Rambuteau. Query a restaurant database for venues within a 200‑meter radius of that point. Apply filters: cuisine must be vegetarian‑friendly, and the venue must offer outdoor seating. Limit results to a single restaurant. Retrieve and return the restaurant’s name, full address, and a brief description.",
+    "rewrite2": "Find a vegetarian‑friendly restaurant that meets the following criteria: \n\n- **Reference location**: Le Potager du Marais, 24 Rue Rambuteau (Paris).  \n- **Proximity filter**: within a 200‑meter radius of the reference location.  \n- **Attribute filters**: cuisine type must include “vegetarian” (or be labeled vegetarian‑friendly); must offer outdoor seating.  \n\n**Required output** for the matching venue (return only the top result):  \n- Restaurant name  \n- Full address  \n- A brief description of the establishment.",
+    "gold_tools": [
+      "searchPlace"
+    ]
+  },
+  {
+    "original_query": "Could you tell me the founding date and current leader of the clan 'SilverSpear', and kindly include the member roster as well?",
+    "rewrite1": "Retrieve the founding date and current leader for the clan named **SilverSpear**, then retrieve the complete member roster for that same clan.",
+    "rewrite2": "Retrieve clan data where clanName = \"SilverSpear\", returning the fields: foundingDate, currentLeader, and full member roster.",
+    "gold_tools": [
+      "getClanInfo"
+    ]
+  },
+  {
+    "original_query": "Could you retrieve the founding date, current leader, and full member roster of the clan \"GoldenAxe\", and then compare the total number of members between SilverSpear and GoldenAxe?",
+    "rewrite1": "**Entities**  \n- Clan 'GoldenAxe' (identifier: name = \"GoldenAxe\")  \n- Clan 'SilverSpear' (identifier: name = \"SilverSpear\")  \n\n**Intended Operations & Steps**  \n1. Retrieve the following attributes for clan 'GoldenAxe':  \n   - founding date  \n   - current leader  \n   - full member roster (list of all member names/IDs)  \n\n2. Retrieve the total number of members for clan 'SilverSpear'.  \n\n3. Retrieve the total number of members for clan 'GoldenAxe' (derived from the roster obtained in step 1).  \n\n4. Compare the two member totals and calculate the difference (SilverSpear count vs. GoldenAxe count).  \n\n**Required Identifiers / Filters**  \n- clan name = \"GoldenAxe\" for steps 1‑3  \n- clan name = \"SilverSpear\" for step 2  \n- fields to fetch in step 1: [\"foundingDate\", \"currentLeader\", \"memberRoster\"]  \n- only the count of members needed for steps 2 and 3  \n\n**Multiple Calls**  \n- Two separate retrieval calls: one for GoldenApex details, one for SilverSpear member count (and a derived count from GoldenAxe roster).",
+    "rewrite2": "Retrieve the founding date, current leader, and complete member roster for the clan \"GoldenAxe\"; retrieve the complete member roster for the clan \"SilverSpear\"; then calculate and compare the total number of members in each roster.",
+    "gold_tools": [
+      "getClanInfo"
+    ]
+  },
+  {
+    "original_query": "Please provide the liquidity score for ETH, using a depth of 5 order‑book levels.",
+    "rewrite1": "Fetch the liquidity score for the cryptocurrency ETH with an order‑book depth of 5 levels.",
+    "rewrite2": "**Entity:** Cryptocurrency ETH  \n**Operation:** Retrieve the liquidity score  \n**Parameters:**  \n- depth: 5 order‑book levels (use the order‑book data up to the fifth level to calculate the score)  \n**Notes:** No intermediate identifiers or additional filters are required; the operation is a single retrieval.",
+    "gold_tools": [
+      "calculateLiquidityScore"
+    ]
+  },
+  {
+    "original_query": "Calculate the liquidity score for BTC using a depth of 10 order‑book levels.",
+    "rewrite1": "Retrieve the order‑book for the BTC market with a depth of 10 levels, then compute the liquidity score based on the retrieved price‑volume data.",
+    "rewrite2": "Calculate liquidity score for the cryptocurrency BTC using an order‑book depth of 10 levels.",
+    "gold_tools": [
+      "calculateLiquidityScore"
+    ]
+  },
+  {
+    "original_query": "BTC has a liquidity score of 88.7, could you also calculate the liquidity score for LTC using a depth of 8 order‑book levels and then compare the liquidity scores of BTC, ETH, and LTC to tell me which cryptocurrency currently has the highest liquidity?",
+    "rewrite1": "Retrieve the liquidity score for LTC by calculating it using an order‑book depth of 8 levels; obtain the existing liquidity scores for BTC (value 88.7) and for ETH; then compare the three scores (BTC, ETH, LTC) and output which cryptocurrency currently has the highest liquidity.",
+    "rewrite2": "No applicable tool for cryptocurrency liquidity score retrieval.",
+    "gold_tools": [
+      "calculateLiquidityScore"
+    ]
+  },
+  {
+    "original_query": "The guitarist I’m interested in is “John Doe” and his artist ID is **GTR12345**. Feel free to pull any upcoming shows for that ID.",
+    "rewrite1": "Retrieve upcoming shows for artist with ID \"GTR12345\" (artist name: John Doe); filter results to only include shows with dates on or after the current date; return the list of show details.",
+    "rewrite2": "Fetch upcoming shows for the artist “John Doe” using the artist identifier GTR12345.",
+    "gold_tools": [
+      "getConcertInfo"
+    ]
+  },
+  {
+    "original_query": "The opening track’s ID for the March 12, 2024 Fillmore show is **TRK56789**. Please retrieve the lyrics for the opening track. Let me know if you need anything else.",
+    "rewrite1": "Retrieve the lyrics for track ID **TRK56789** (the opening track of the March 12, 2024 Fillmore show).",
+    "rewrite2": "Retrieve lyrics for track ID \"TRK56789\" (opening track of the March 12, 2024 Fillmore show).",
+    "gold_tools": [
+      "retrieveLyrics"
+    ]
+  },
+  {
+    "original_query": "Let's go with **California** as the region—I’m interested in the urban weather stations there.",
+    "rewrite1": "List urban weather stations located in the **California** region.",
+    "rewrite2": "Retrieve all weather stations with the following criteria:  \n- Entity: Weather stations  \n- Filters: region = \"California\", stationCategory = \"urban\"  \n- Operation: list or query the stations satisfying both filters.",
+    "gold_tools": [
+      "getWeatherStationInfo"
+    ]
+  },
+  {
+    "original_query": "Could you also provide detailed metadata for the rural weather stations in California, so I can compare them with the urban stations you previously listed?",
+    "rewrite1": "Retrieve detailed metadata for all weather stations in California where the station type is classified as “rural,” including identifier, location coordinates, elevation, sensor list, data availability period, and any other descriptive attributes.",
+    "rewrite2": "Identify all California weather stations classified as rural, obtain their station identifiers, and for each identifier call getStationCoordinates { station: \"<rural_station_name>\" } to retrieve latitude and longitude metadata for comparison with the previously listed urban stations.",
+    "gold_tools": [
+      "getWeatherStationInfo"
+    ]
+  },
+  {
+    "original_query": "Could you retrieve detailed metadata for the urban weather stations in Nevada?",
+    "rewrite1": "Retrieve detailed metadata for all urban weather stations located in the state of Nevada.",
+    "rewrite2": "Retrieve detailed metadata (including station ID, coordinates, elevation, and sensor information) for all urban weather stations located in Nevada.",
+    "gold_tools": [
+      "getWeatherStationInfo"
+    ]
+  },
+  {
+    "original_query": "Could you retrieve the administrative area for the location Arthur’s Seat using its OSGB36 eastings 330000 and northings 673000, and include the area code in the result?",
+    "rewrite1": "Retrieve the administrative area and its area code for the location “Arthur’s Seat” identified by OSGB36 eastings 330000 and northings 673000.",
+    "rewrite2": "getAdministrativeAreaByCoordinates {\n  \"eastings\": \"330000\",\n  \"northings\": \"673000\",\n  \"coordinateReferenceSystem\": \"OSGB36\",\n  \"includeAreaCode\": true\n}",
+    "gold_tools": [
+      "retrieveAdministrativeArea"
+    ]
+  },
+  {
+    "original_query": "I’d like to obtain the administrative area and area code for Edinburgh Castle. I have the northings value 673500. The eastings coordinate for Edinburgh Castle is **330000**.",
+    "rewrite1": "Entity: Edinburgh Castle (northings = 673500, eastings = 330000)  \nOperation: Retrieve its administrative area (e.g., council or region) and its telephone area code.  \nSteps:  \n1. Resolve the location using the provided northings/eastings coordinates.  \n2. Query the geographic/telecommunications database for the administrative area associated with that location.  \n3. Retrieve the corresponding area code for the same location.  \nNo repeated or multiple tool calls are needed.",
+    "rewrite2": "Retrieve the administrative area name and the area code for the location identified by northings 673500 and eastings 330000 (Edinburgh Castle). This requires first resolving the given coordinates to a place identifier, then querying the metadata for that identifier to obtain the administrative area and its area code, with no additional filters or limits.",
+    "gold_tools": [
+      "retrieveAdministrativeArea"
+    ]
+  },
+  {
+    "original_query": "Could you retrieve the administrative area and area code for the Royal Mile with eastings 332000 and northings 673200, and let me know if the area code matches the one you provided for this location earlier?",
+    "rewrite1": "Entity: Royal Mile  \nIdentifiers: eastings = 332000, northings = 673200  \nOperation: retrieve the administrative area and the area code for this location  \nIntermediate step: obtain the previously provided area code for Royal Mile (from earlier retrieval)  \nFinal check: compare the newly retrieved area code with the earlier one and report whether they match.",
+    "rewrite2": "Retrieve the administrative area and area code for the Royal Mile using the coordinates eastings 332000 and northings 673200, then check whether the returned area code matches the area code previously provided for this location.",
+    "gold_tools": [
+      "retrieveAdministrativeArea"
+    ]
+  },
+  {
+    "original_query": "Could you provide the total episode count for an anime series? The anime ID for *Attack on Titan* is **anime_164**. Let me know if you need anything else.",
+    "rewrite1": "Retrieve the total episode count for the anime series identified by anime_id = \"anime_164\".",
+    "rewrite2": "Retrieve the total episode count for the anime series with identifier **anime_164**.",
+    "gold_tools": [
+      "getEpisodeCount"
+    ]
+  },
+  {
+    "original_query": "What’s the opening theme for Attack on Titan, and how many episodes does My Hero Academia have?",
+    "rewrite1": "Retrieve the opening theme for the anime titled “Attack on Titan” and retrieve the total episode count for the anime titled “My Hero Academia”, performing two separate lookups identified by each anime’s title.",
+    "rewrite2": "1. Resolve the unique anime_id for **“Attack on Titan.”**  \n2. Using the obtained anime_id, request the opening theme information for that anime (requires an anime‑details lookup operation).  \n3. Resolve the unique anime_id for **“My Hero Academia.”**  \n4. Call **getAnimeAirDates** with parameters `{ \"anime_id\": <My Hero Academia ID>, \"include_episodes\": \"true\" }` to retrieve the full episode list, then count the episodes.  \n\n*Both the anime_id lookup steps must be performed before the respective data‑retrieval calls; the getAnimeAirDates tool is invoked once for My Hero Academia, while a separate (unspecified) anime‑details tool is needed to fetch the opening theme for Attack on Titan.*",
+    "gold_tools": [
+      "getOpeningTheme"
+    ]
+  },
+  {
+    "original_query": "The anime ID for *My Hero Academia* is **anime_236**. How many episodes are there? Let me know if you need anything else.",
+    "rewrite1": "Retrieve the total number of episodes for the anime identified by ID \"anime_236\".",
+    "rewrite2": "Retrieve the total number of episodes for the anime identified by anime_236.",
+    "gold_tools": [
+      "getEpisodeCount"
+    ]
+  },
+  {
+    "original_query": "I'm not entirely sure which specific form I should be looking at—could you suggest the most appropriate one based on a typical recent graduate’s employment situation? Also, I’m interested in the 2023 fiscal year guidelines.",
+    "rewrite1": "listDatasetFormats {\n  \"category\": \"2023 fiscal year employment guidelines for recent graduates\"\n}",
+    "rewrite2": "Invoke **countJsonData** with:\n- **collection**: `\"employment_forms\"`\n- **query**: `{\"targetAudience\":\"recent_graduate\",\"employmentSituation\":\"typical\",\"fiscalYear\":2023}`",
+    "gold_tools": [
+      "getTaxFormSubmissionGuidelines"
+    ]
+  },
+  {
+    "original_query": "Get the tax‑exempt organization contributions for a recent graduate filing Form 1040 (2023)",
+    "rewrite1": "Retrieve tax‑exempt organization contributions for a Form 1040 filing in 2023, filtering by filing year = \"2023\", form type = \"1040\", and taxpayer status = \"recent graduate\".",
+    "rewrite2": "Fetch tax‑exempt organization contribution amounts for a recent graduate filing a 2023 Form 1040, specifying the tax year 2023 and the filing type “Form 1040”.",
+    "gold_tools": [
+      "getTaxExemptOrganizationList"
+    ]
+  },
+  {
+    "original_query": "What audit history is available for taxpayer ID 987654321 between 2020‑01‑01 and 2022‑12‑31?",
+    "rewrite1": "Call **searchLegalProceedings** with the parameter **cnpj = \"987654321\"**.  \nAfter retrieving the proceedings, filter the returned audit entries to include only those whose audit dates fall between **2020‑01‑01** and **2022‑12‑31**.  \n\n(Only a single call to `searchLegalProceedings` is required; the date filtering is performed internally on the result set.)",
+    "rewrite2": "Retrieve audit history for taxpayer ID 987654321 with a date filter: start_date = 2020‑01‑01, end_date = 2022‑12‑31.",
+    "gold_tools": [
+      "getTaxAuditHistory"
+    ]
+  },
+  {
+    "original_query": "Could you first obtain the latest update information for the Steam title identified by '111222', analyze whether the patch addresses multiplayer latency, and if it does, subsequently retrieve beta release details for the game with ID '333444' to assess upcoming features?",
+    "rewrite1": "Retrieve the latest update information for the Steam title with ID `111222`; examine the update notes to determine whether the patch mentions multiplayer latency. If the patch does address multiplayer latency, then retrieve the beta release details for the game with ID `333444` to evaluate upcoming features.",
+    "rewrite2": "Retrieve the latest update information for Steam title ID 111222, determine whether the update notes indicate that multiplayer latency has been addressed, and if so, obtain the beta release details for Steam title ID 333444.",
+    "gold_tools": [
+      "getGameUpdates"
+    ]
+  },
+  {
+    "original_query": "Retrieve the latest update for Steam game ID '555666' and determine whether the patch notes include any changes to the system requirements. If such changes are present, also fetch beta release details for game ID '777888' (with includeBeta = true) to see whether any new DLCs or major features are announced.",
+    "rewrite1": "Retrieve the latest update for game ID 555666, inspect its patch notes for any system‑requirement changes, and if such changes exist, fetch the beta release (includeBeta = true) for game ID 777888 to extract any announced new DLCs or major features.",
+    "rewrite2": "Retrieve latest update for gameId ='555666' → examine its patchNotes for keywords indicating system‑requirements changes. If any such change is found, then retrieve betaReleaseDetails for gameId ='777888' with includeBeta = true, filtered to include only new DLCs or major features. Use the same retrieval tool for both steps (called twice).",
+    "gold_tools": [
+      "getGameUpdates"
+    ]
+  },
+  {
+    "original_query": "As part of my research on climate policy, I need a detailed export of all German-language news items spanning from startDate=2023-05-01 through endDate=2023-05-31, including any relevant opinion pieces and analysis, so that I can perform a thorough content analysis.",
+    "rewrite1": "Retrieve all German-language news items dated between 2023‑05‑01 and 2023‑05‑31, filtering to include any pieces classified as opinion or analysis, and export the full set for content analysis.",
+    "rewrite2": "**Entity**: news articles (German‑language).  \n\n**Intended operation**: export a complete dataset of all articles that are opinion pieces or analysis, published between 2023‑05‑01 and 2023‑05‑31.  \n\n**Intermediate steps / identifiers**:  \n1. Retrieve the set of unique German‑language news source domains (use `listArticleSources` with `language=\"de\"`).  \n2. For each identified source, query its article archive to obtain articles whose `publication_date` is ≥ 2023‑05‑01 and ≤ 2023‑05‑31 and whose `article_type` belongs to {`opinion`, `analysis`}.  \n3. Collect each article’s identifier, title, publication date, source domain, and full content.  \n\n**Filters / arguments**:  \n- `language = \"de\"`  \n- `startDate = \"2023-05-01\"`  \n- `endDate = \"2023-05-31\"`  \n- `article_type ∈ [\"opinion\", \"analysis\"]`  \n\n**Tool usage**: the source‑listing step (`listArticleSources`) is called once; the article‑retrieval step may need to be called repeatedly (one call per source or per paginated result set) to gather all matching items.  \n\n**Result**: a single export (e.g., CSV or JSON) containing all filtered German‑language news items for the specified date range.",
+    "gold_tools": [
+      "exportNewsFeed"
+    ]
+  },
+  {
+    "original_query": "I need a CSV export of German-language news items for June 2023, ending on 2023-06-30. Could you retrieve that for me?",
+    "rewrite1": "Retrieve news items where language = \"German\", date >= \"2023-06-01\" and date <= \"2023-06-30\", and export the results as a CSV file.",
+    "rewrite2": "Retrieve news items (entity: news articles) with the following parameters: language=\"German\", publicationDate ≥ \"2023-06-01\" and ≤ \"2023-06-30\". Output format: CSV export. No intermediate identifiers required; perform a single retrieval operation using these filters.",
+    "gold_tools": [
+      "exportNewsFeed"
+    ]
+  },
+  {
+    "original_query": "Please export German-language news articles on renewable energy up to 2024-06-30. Please start from 2023-01-01.",
+    "rewrite1": "Export German-language news articles on renewable energy with publication dates from 2023‑01‑01 up to 2024‑06‑30.",
+    "rewrite2": "Retrieve German-language news articles on renewable energy published between 2023-01-01 and 2024-06-30.",
+    "gold_tools": [
+      "exportNewsFeed"
+    ]
+  },
+  {
+    "original_query": "I’ve located the Steam ID for “Ethereal Horizons” – it’s 1234567. Could you retrieve up to 15 of the latest news updates for this game, making sure to include any recent developer statements or community events?",
+    "rewrite1": "Steam game “Ethereal Horizons” (Steam ID 1234567): retrieve up to 15 of the most recent news items, ensuring the results include any developer statements and community‑event announcements.",
+    "rewrite2": "Retrieve up to 15 of the most recent news updates for the game identified by Steam ID 1234567, ensuring that the results include any recent developer statements or community‑event announcements.",
+    "gold_tools": [
+      "getGameNews"
+    ]
+  },
+  {
+    "original_query": "I’d like to get the ten most recent news updates for the upcoming sci‑fi RPG “Starlight Odyssey” (Steam App ID 7654321), focusing on any developer announcements or community events.",
+    "rewrite1": "Retrieve the 10 most recent news updates for the Steam application with App ID 7654321 (title “Starlight Odyssey”), restricting results to entries classified as developer announcements or community events.",
+    "rewrite2": "Retrieve the ten most recent news updates for the game “Starlight Odyssey” (Steam App ID 7654321), filtering only items categorized as developer announcements or community events, and return them ordered by newest first.",
+    "gold_tools": [
+      "getGameNews"
+    ]
+  },
+  {
+    "original_query": "I would like to review the dividend history of the relevant equity for the fiscal year 2020. The ticker symbol is **AAPL**. If you need it in any particular format, just let me know. Thanks!",
+    "rewrite1": "Retrieve the dividend history for the equity with ticker symbol **AAPL** for the fiscal year 2020.",
+    "rewrite2": "Fetch the dividend history of the equity with ticker symbol **AAPL** for the fiscal year 2020, and indicate the preferred output format if necessary.",
+    "gold_tools": [
+      "getDividendInfo"
+    ]
+  },
+  {
+    "original_query": "Could you fetch the most recent news headlines for it and provide the dividend history for the fiscal year 2021?",
+    "rewrite1": "Entity: target company (identified by name or ticker symbol).  \nStep 1: Resolve the company’s internal identifier if only a name/ticker is provided.  \nStep 2: Retrieve the most recent news headlines for the company (no date range limit, return the latest items).  \nStep 3: Retrieve the dividend payment history for the same company, filtered to fiscal year 2021 (include dates, amounts, and record count).  \nNote: Steps 2 and 3 are separate retrieval operations that may each require invoking the appropriate news‑fetch and dividend‑data tools once.",
+    "rewrite2": "Entity: the unspecified target referred to as “it”.  \nOperations:  \n1. Retrieve the most recent news headline items for the target.  \n2. Retrieve the dividend history records for the target, limited to fiscal year 2021.  \nIntermediate steps: determine or confirm the target’s identifying name or ticker symbol before querying.  \nFilters/limits: for operation 1, order by publish date descending and return the latest set (e.g., top 10); for operation 2, filter dividend entries to those dated within fiscal year 2021.  \nNo need to call the same tool multiple times; each operation can be fulfilled with a single appropriate query.",
+    "gold_tools": [
+      "getStockNews",
+      "getDividendInfo"
+    ]
+  },
+  {
+    "original_query": "Could you also provide the most recent two news headlines for AAPL?",
+    "rewrite1": "Retrieve the two most recent news headlines for ticker symbol **AAPL**.",
+    "rewrite2": "Use **exportNewsFeed** to retrieve articles for the most recent period (e.g., startDate = today ‑ 7 days, endDate = today, language = \"en\"). After obtaining the CSV of articles, **filter** rows where the article content or title mentions the ticker “AAPL”, **sort** the filtered rows by publication date descending, and **select** the top 2 entries, returning only their headline strings. No additional tool calls are required.",
+    "gold_tools": [
+      "getStockNews"
+    ]
+  }
+]

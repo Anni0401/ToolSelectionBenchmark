@@ -12,7 +12,12 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+PROJECT_ROOT="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-}}"
+if [[ -z "${PROJECT_ROOT}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+fi
+
 cd "${PROJECT_ROOT}"
 
 echo "===================================================="
@@ -97,7 +102,8 @@ echo
 
 python -u "${PROJECT_ROOT}/multi-agent-framework/generate_dpo_ranked_preferences.py" \
     --input "${PROJECT_ROOT}/multi-agent-framework/queries_gold_tools_batch1_rewrites.json" \
-    --tools-file "${PROJECT_ROOT}/multi-agent-framework/tools/tools_en.jsonl" \
+    --schema-cache-file "${PROJECT_ROOT}/wild-tool-bench/wtb/model_handler/api_inference/tool_schemas_cache.jsonl" \
+    --embedding-cache-file "${PROJECT_ROOT}/wild-tool-bench/wtb/model_handler/api_inference/tool_embeddings_cache_qwen3.json" \
     --output "${PROJECT_ROOT}/multi-agent-framework/queries_gold_tools_batch1_dpo_ranked.json"
 
 echo "===================================================="

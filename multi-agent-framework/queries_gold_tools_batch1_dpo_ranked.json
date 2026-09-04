@@ -1,0 +1,649 @@
+[
+  {
+    "prompt": "Hey, find the top 5 Unsplash users named Alex and like the photo with ID abc123.",
+    "chosen": {
+      "version": "rewrite_b",
+      "score": 1.4254893882022286,
+      "query": "Retrieve up to 5 Unsplash user profiles where the user’s name equals “Alex”. After obtaining those user identifiers, invoke a “like” action on the Unsplash photo with the identifier abc123. Include the user‑list limit (5) and the exact photo ID (abc123) in the respective steps.",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": 0.9166917730490858,
+      "query": "Search Unsplash for users with the name “Alex”, retrieve the top 5 users ranked by popularity (e.g., followers or likes), and then perform a like operation on the photo whose ID is “abc123”.",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "searchUsers",
+      "createPhotoLike"
+    ]
+  },
+  {
+    "prompt": "Please fetch the first 5 Unsplash users whose username contains \"Alex\" and like the photo with ID def456.",
+    "chosen": {
+      "version": "original",
+      "score": 1.3596814026075055,
+      "query": "Please fetch the first 5 Unsplash users whose username contains \"Alex\" and like the photo with ID def456.",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": 0.9166917730490858,
+      "query": "Search Unsplash users where `username` CONTAINS \"Alex\", retrieve the first 5 results, extract each resulting `userId`, and for each extracted `userId` invoke the “like‑photo” operation on the photo with `photoId` = \"def456\".",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "searchUsers",
+      "createPhotoLike"
+    ]
+  },
+  {
+    "prompt": "Hey, ping 192.168.1.10 and 10.0.0.5, each with 3 echo requests, and tell me which host responds faster.",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Hey, ping 192.168.1.10 and 10.0.0.5, each with 3 echo requests, and tell me which host responds faster.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.3833166425669464,
+      "query": "searchDataAPIEndpoints {\n  \"query\": \"ping host\",\n  \"limit\": 2\n}",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "pingHost"
+    ]
+  },
+  {
+    "prompt": "Could you generate up to 20 anagrams for the word “conversation”?",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Could you generate up to 20 anagrams for the word “conversation”?",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": -110.06113393969568,
+      "query": "N/A",
+      "top10_hit_count": 0
+    },
+    "gold_tools": [
+      "getWordAnagrams"
+    ]
+  },
+  {
+    "prompt": "Please check if the Mixcloud track https://www.mixcloud.com/artist/track20 can be streamed in the United Kingdom (region_code GB), and also check the availability of another track (URL not provided) in the Netherlands (region_code NL).",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Please check if the Mixcloud track https://www.mixcloud.com/artist/track20 can be streamed in the United Kingdom (region_code GB), and also check the availability of another track (URL not provided) in the Netherlands (region_code NL).",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.6126444113193592,
+      "query": "downloadCoverArt(item_url=\"https://www.mixcloud.com/artist/track20\") // intended to verify streaming availability in region GB; downloadCoverArt(item_url=\"<track_url_not_provided>\") // intended to verify streaming availability in region NL.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "checkTrackAvailability"
+    ]
+  },
+  {
+    "prompt": "Could you fetch recent industrial emissions data for a city of my choice (e.g., Detroit) and historical water‑quality data for a nearby river (e.g., the Detroit River) for the past year, and then show me an example of how these real‑world datasets could be visualized and discussed alongside the greenhouse‑effect story and home experiment I’m using in my middle‑school lesson?",
+    "chosen": {
+      "version": "rewrite_b",
+      "score": 1.2878689283355975,
+      "query": "Fetch recent industrial emissions data for the chosen city (e.g., Detroit) covering the last 12 months, fetch historical water‑quality data for the nearby river (e.g., Detroit River) for the same 12‑month period, then generate an example visualization that combines both datasets and outlines how they can be discussed in a middle‑school lesson alongside the greenhouse‑effect narrative and the corresponding home experiment.",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": -0.8239968026932241,
+      "query": "Retrieve industrial emissions data for the specified city (e.g., Detroit) covering the most recent 12‑month period; retrieve historical water‑quality data for the specified nearby river (e.g., the Detroit River) covering the same 12‑month period; then generate an example visualization that juxtaposes the two datasets and compose a discussion that links the visualized trends to the greenhouse‑effect narrative and the middle‑school home experiment you are teaching.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getIndustrialEmissions",
+      "getWaterQualityHistorical"
+    ]
+  },
+  {
+    "prompt": "Hey, I'm organizing a weekend bike‑and‑tram adventure for a group of friends who love exploring hidden corners of the city. Could you pull together a comprehensive list of tram stops that are scattered across the less‑touristy neighborhoods, especially those that lie no more than 250 meters from any point we might be hanging out at, like cafés or parks? The neighborhoods we have in mind are Alcântara, Graça, and Campo de Ourique – all off‑the‑beaten‑path areas in Lisbon. For specific spots, picture the quiet riverside Café da Ribeira in Alcântara, the tucked‑away Jardim da Estrela near Graça, and the little Parque da Bela Vista in Campo de Ourique. Does that give you enough to locate the tram stops?",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Hey, I'm organizing a weekend bike‑and‑tram adventure for a group of friends who love exploring hidden corners of the city. Could you pull together a comprehensive list of tram stops that are scattered across the less‑touristy neighborhoods, especially those that lie no more than 250 meters from any point we might be hanging out at, like cafés or parks? The neighborhoods we have in mind are Alcântara, Graça, and Campo de Ourique – all off‑the‑beaten‑path areas in Lisbon. For specific spots, picture the quiet riverside Café da Ribeira in Alcântara, the tucked‑away Jardim da Estrela near Graça, and the little Parque da Bela Vista in Campo de Ourique. Does that give you enough to locate the tram stops?",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.4912498793219044,
+      "query": "Use **listParkingSpots** three times, each time supplying a `bbox` that defines a square of approximately 500 m (250 m radius) around the target location:\n\n1. **Alcântara – Café da Ribeira**  \n   - Compute a bounding box around the café’s coordinates (minLon, minLat, maxLon, maxLat) that extends ≈0.0025 ° lon/lat in each direction (≈250 m).  \n   - Call `listParkingSpots` with `bbox` set to this value.\n\n2. **Graça – Jardim da Estrela**  \n   - Compute a similar 250 m‑radius bounding box around the garden’s coordinates.  \n   - Call `listParkingSpots` with this `bbox`.\n\n3. **Campo de Ourique – Parque da Bela Vista**  \n   - Compute a 250 m‑radius bounding box around the park’s coordinates.  \n   - Call `listParkingSpots` with this `bbox`.\n\nEach call will return the locations (including tram stops, if present) within the specified 250 m radius of the listed cafés/parks in the three off‑beat neighborhoods.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "listTramStops"
+    ]
+  },
+  {
+    "prompt": "Could you provide the bike‑sharing station availability within 200 meters of each of the tram stops you listed (e.g., Alcântara‑Mar, Cais do Sodré, Ribeira das Naus, Graça, São Vicente, Campo de Ourique, etc.)? I’d like to know how many bikes and docks are currently free at those nearby stations.",
+    "chosen": {
+      "version": "rewrite_b",
+      "score": 0.6126444113193592,
+      "query": "Retrieve bike‑sharing stations that are located within 200 meters of each listed tram stop (entities: tram stops – Alcântara‑Mar, Cais do Sodré, Ribeira das Naus, Graça, São Vicente, Campo de Ourique, etc.).  \n\nSteps:  \n1. Identify each tram stop by its name (or internal stop ID if required).  \n2. For each stop, query the bike‑sharing system for all stations whose geographic coordinates satisfy distance ≤ 200 m from the stop’s coordinates.  \n3. For each qualifying station, return the current availability metrics: number of bikes free and number of docks free.  \n\nOutput should be a list keyed by tram‑stop name, each entry containing the nearby station IDs (or names) with their corresponding free‑bike and free‑dock counts. No additional text or formatting needed.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.4912498793219044,
+      "query": "Could you provide the bike‑sharing station availability within 200 meters of each of the tram stops you listed (e.g., Alcântara‑Mar, Cais do Sodré, Ribeira das Naus, Graça, São Vicente, Campo de Ourique, etc.)? I’d like to know how many bikes and docks are currently free at those nearby stations.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getBikeSharingAvailability"
+    ]
+  },
+  {
+    "prompt": "Give me a Clark/Lake station ridership comparison (including recent ridership stats and contact information)",
+    "chosen": {
+      "version": "original",
+      "score": 1.5468839201996833,
+      "query": "Give me a Clark/Lake station ridership comparison (including recent ridership stats and contact information)",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 1.3596814026075055,
+      "query": "Fetch recent ridership statistics (most recent reporting period) and contact information (phone, email, address) for the transit station identified by the name “Clark/Lake”. Then fetch the same data for the station identified by the name “Lake”. Finally, produce a side‑by‑side comparison of the two stations’ ridership counts and contact details.",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "getStationRidershipStats",
+      "getStationContactInfo"
+    ]
+  },
+  {
+    "prompt": "Give me Washington station recent ridership statistics and contact phone number",
+    "chosen": {
+      "version": "original",
+      "score": 1.5468839201996833,
+      "query": "Give me Washington station recent ridership statistics and contact phone number",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.6972029858199958,
+      "query": "listStationFacilities { stationId: \"Washington\", facilityType: \"ridership\" }\n→ listStationFacilities { stationId: \"Washington\", facilityType: \"phone\" }",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "getStationRidershipStats",
+      "getStationContactInfo"
+    ]
+  },
+  {
+    "prompt": "Please provide a concise 250‑character summary of the report located at https://news.org/policy/energy-plan, and simultaneously arrange for weekly notifications on the \"Energy Policy\" subject to be sent to policy@institute.org.",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 1.0380863050465405,
+      "query": "Fetch the report at URL https://news.org/policy/energy-plan, generate a concise summary limited to 250 characters, then configure a recurring weekly notification titled “Energy Policy” to be sent to the email address policy@institute.org.",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "original",
+      "score": -2.848114477949826,
+      "query": "Please provide a concise 250‑character summary of the report located at https://news.org/policy/energy-plan, and simultaneously arrange for weekly notifications on the \"Energy Policy\" subject to be sent to policy@institute.org.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "generateArticleSummary",
+      "subscribeTopicAlerts"
+    ]
+  },
+  {
+    "prompt": "As the HR manager, I need a comprehensive view of the New York market: provide the list of job categories available there, determine the average salary for \"software engineer\" positions, and export the data for job IDs 111, 222, and 333 in JSON format.",
+    "chosen": {
+      "version": "original",
+      "score": 1.8782377558804797,
+      "query": "As the HR manager, I need a comprehensive view of the New York market: provide the list of job categories available there, determine the average salary for \"software engineer\" positions, and export the data for job IDs 111, 222, and 333 in JSON format.",
+      "top10_hit_count": 3
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 1.7252241180628427,
+      "query": "No matching tool definitions are available to fulfill the request for listing job categories, calculating average software engineer salary, and exporting specific job IDs.",
+      "top10_hit_count": 3
+    },
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "prompt": "Could you list the job categories for San Francisco? Could you calculate the average salary for “data scientist” positions in New York? Could you export the job data for IDs 444 and 555 in CSV format?",
+    "chosen": {
+      "version": "original",
+      "score": 1.8607702634527328,
+      "query": "Could you list the job categories for San Francisco? Could you calculate the average salary for “data scientist” positions in New York? Could you export the job data for IDs 444 and 555 in CSV format?",
+      "top10_hit_count": 3
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": 0.4912498793219044,
+      "query": "List job categories for city = \"San Francisco\". Compute average salary for position = \"data scientist\" in city = \"New York\". Export job records with IDs = [444, 555] in CSV format.",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "prompt": "Could you list the job categories for Chicago? Could you calculate the average salary for “machine learning engineer” positions in New York? Could you export the job data for IDs 666 and 777 in JSON format?",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 1.9302005627666299,
+      "query": "Retrieve job categories where city = “Chicago”; then fetch all job listings with title = “machine learning engineer” and city = “New York” and compute the average of their salary fields; finally get the full job records for IDs 666 and 777 and output them in JSON format.",
+      "top10_hit_count": 3
+    },
+    "rejected": {
+      "version": "original",
+      "score": 1.739375731455278,
+      "query": "Could you list the job categories for Chicago? Could you calculate the average salary for “machine learning engineer” positions in New York? Could you export the job data for IDs 666 and 777 in JSON format?",
+      "top10_hit_count": 3
+    },
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "prompt": "Could you list the job categories for Boston? Also, calculate the average salary for “DevOps engineer” positions in San Francisco, and export the job data for IDs 1010 and 1111 in JSON format.",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 1.8607702634527328,
+      "query": "Fetch the list of job categories for the city **Boston**; calculate the average salary for positions titled **“DevOps engineer”** filtered to the city **San Francisco**; and retrieve the job records with IDs **1010** and **1111**, exporting the results in JSON format.",
+      "top10_hit_count": 3
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": -0.44068016012627764,
+      "query": "Retrieve job categories for city = \"Boston\"; calculate average salary for position = \"DevOps engineer\", city = \"San Francisco\"; export job data for IDs = \"1010,1111\" in format = \"json\".",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "listJobCategories",
+      "calculateAverageSalary",
+      "exportJobData"
+    ]
+  },
+  {
+    "prompt": "For my upcoming presentation on interactive UI elements, I would appreciate it if you could export the full set of typing animation settings for the SVG labeled 'interactiveDemo' in JSON format, ensuring that every parameter—such as speed, cursor style, and pause intervals—is captured accurately, so I can analyze the configuration and compare it with other prototypes.",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "For my upcoming presentation on interactive UI elements, I would appreciate it if you could export the full set of typing animation settings for the SVG labeled 'interactiveDemo' in JSON format, ensuring that every parameter—such as speed, cursor style, and pause intervals—is captured accurately, so I can analyze the configuration and compare it with other prototypes.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": 0.4912498793219044,
+      "query": "Export the complete typing animation configuration for the SVG element with ID “interactiveDemo” in JSON format, ensuring all parameters (including speed, cursor style, pause intervals, and any other settings) are captured.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "exportTypingAnimationSettings"
+    ]
+  },
+  {
+    "prompt": "As a financial analyst, could you compare the 24‑hour trading volume and price change percentage for the three leading cryptocurrencies—Bitcoin (BTC), Ethereum (ETH), and Solana (SOL)—and then present the findings in a concise summary table?",
+    "chosen": {
+      "version": "rewrite_b",
+      "score": -2.4966007508142702,
+      "query": "Retrieve 24‑hour trading volume and 24‑hour price change percentage for the cryptocurrency symbols BTC, ETH, and SOL, then compile the three results into a concise summary table.",
+      "top10_hit_count": 0
+    },
+    "rejected": {
+      "version": "original",
+      "score": -5.859173208548071,
+      "query": "As a financial analyst, could you compare the 24‑hour trading volume and price change percentage for the three leading cryptocurrencies—Bitcoin (BTC), Ethereum (ETH), and Solana (SOL)—and then present the findings in a concise summary table?",
+      "top10_hit_count": 0
+    },
+    "gold_tools": [
+      "getAssetInfo"
+    ]
+  },
+  {
+    "prompt": "Provide the latest market capitalization and circulating supply for Bitcoin (BTC), Ethereum (ETH), and Solana (SOL) in a concise table.",
+    "chosen": {
+      "version": "rewrite_b",
+      "score": 0.42544189372718133,
+      "query": "Retrieve the latest market capitalization and circulating supply for the cryptocurrency entities Bitcoin (BTC), Ethereum (ETH), and Solana (SOL), and present the three results in a concise table.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.3833166425669464,
+      "query": "Provide the latest market capitalization and circulating supply for Bitcoin (BTC), Ethereum (ETH), and Solana (SOL) in a concise table.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getAssetInfo"
+    ]
+  },
+  {
+    "prompt": "Could you provide the allergen information for the main ingredient in pizza dough?",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 0.9342395088803241,
+      "query": "Retrieve allergen information for the primary ingredient used in pizza dough, specifying the ingredient name as the identifier to obtain its list of allergens.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.6126444113193592,
+      "query": "Could you provide the allergen information for the main ingredient in pizza dough?",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getIngredientAllergenInfo"
+    ]
+  },
+  {
+    "prompt": "As the guild's strategist, I request a comprehensive enumeration of all skill levels associated with classId 'necromancer' per its description, and please ensure that the output includes unlock information so we can plan our progression roadmap accordingly.",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "As the guild's strategist, I request a comprehensive enumeration of all skill levels associated with classId 'necromancer' per its description, and please ensure that the output includes unlock information so we can plan our progression roadmap accordingly.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.3536294194552733,
+      "query": "listSkillLevels: {\"classId\":\"necromancer\",\"include_unlock_info\":true}",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "listSkillLevels"
+    ]
+  },
+  {
+    "prompt": "I would like to (1) calculate the expected damage of the weapon with ID `soul_reaper` against the monster with ID `undead_golem` when the necromancer uses the **Soul Drain** skill (level 2), assuming an attack power modifier of `150%`; and (2) list all skill levels for the classId `paladin`, including unlock information, so we can compare progression paths between necromancers and paladins.",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 1.2481258521333736,
+      "query": "Calculate expected damage using **calculateDamage** with:\n- weaponId = \"soul_reaper\"\n- monsterId = \"undead_golem\"\n- attackPower = \"150%\"\n- (implicit) necromancer’s skill = \"Soul Drain\", level = 2 (use as contextual modifier for damage)\n\nThen retrieve the full progression list for the class **paladin**, including each skill level and its unlock criteria (classId = \"paladin\"), so the resulting skill‑level data can be compared to the necromancer’s Soul Drain (level 2) progression.",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.9439982470001556,
+      "query": "calculateDamage: parameters → {weaponId: \"soul_reaper\", monsterId: \"undead_golem\", skillName: \"Soul Drain\", skillLevel: 2, attackPowerModifier: \"150%\"}; then listSkillLevels: parameters → {classId: \"paladin\", includeUnlockInfo: true}.",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "calculateDamage",
+      "listSkillLevels"
+    ]
+  },
+  {
+    "prompt": "Could you retrieve and list all the image URLs from the article about sunrise over the mountains that we talked about? Here’s the article URL you need – https://example.com/articles/sunrise-mountains.",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 0.9342395088803241,
+      "query": "Retrieve the web content at article_url = “https://example.com/articles/sunrise-mountains”, then parse the fetched HTML to extract and list all image URLs (src attributes) found within the article. Use one tool call to obtain the page content and a second tool call to extract the image URLs from that content. No additional filters, limits, or date parameters are required.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.6126444113193592,
+      "query": "Could you retrieve and list all the image URLs from the article about sunrise over the mountains that we talked about? Here’s the article URL you need – https://example.com/articles/sunrise-mountains.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "listArticleImages"
+    ]
+  },
+  {
+    "prompt": "Could you kindly provide a list of all transportation and pedestrian layers available on the heritage map (mapId 'heritage2023'), and, in addition, search for museums in the historic district using the query 'museum' centered at '48.8566,2.3522' with a radius of 500 meters?",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 1.3596814026075055,
+      "query": "Retrieve all layers of type “transportation” and “pedestrian” for mapId = `heritage2023`; then, using the same map, execute a spatial text search for features whose name matches the query `museum`, limited to the historic district, centered at latitude 48.8566 longitude 2.3522 with a radius of 500 meters.",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.9265307545724086,
+      "query": "Could you kindly provide a list of all transportation and pedestrian layers available on the heritage map (mapId 'heritage2023'), and, in addition, search for museums in the historic district using the query 'museum' centered at '48.8566,2.3522' with a radius of 500 meters?",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "listMapLayers",
+      "searchPlace"
+    ]
+  },
+  {
+    "prompt": "Could you also find a nearby café or restaurant within a 300‑meter radius of the Centre Pompidou that offers vegetarian options, and provide its name, address, and a brief description?",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Could you also find a nearby café or restaurant within a 300‑meter radius of the Centre Pompidou that offers vegetarian options, and provide its name, address, and a brief description?",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": 0.6126444113193592,
+      "query": "Find cafés or restaurants within a 300‑meter radius of the Centre Pompidou that offer vegetarian options, and return each venue’s name, address, and a brief description.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "searchPlace"
+    ]
+  },
+  {
+    "prompt": "The guitarist I’m interested in is “John Doe” and his artist ID is **GTR12345**. Feel free to pull any upcoming shows for that ID.",
+    "chosen": {
+      "version": "rewrite_b",
+      "score": 0.6126444113193592,
+      "query": "Fetch upcoming shows for the artist “John Doe” using the artist identifier GTR12345.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.4912498793219044,
+      "query": "The guitarist I’m interested in is “John Doe” and his artist ID is **GTR12345**. Feel free to pull any upcoming shows for that ID.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getConcertInfo"
+    ]
+  },
+  {
+    "prompt": "The opening track’s ID for the March 12, 2024 Fillmore show is **TRK56789**. Please retrieve the lyrics for the opening track. Let me know if you need anything else.",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 0.9342395088803241,
+      "query": "Retrieve the lyrics for track ID **TRK56789** (the opening track of the March 12, 2024 Fillmore show).",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.3313538356807963,
+      "query": "The opening track’s ID for the March 12, 2024 Fillmore show is **TRK56789**. Please retrieve the lyrics for the opening track. Let me know if you need anything else.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "retrieveLyrics"
+    ]
+  },
+  {
+    "prompt": "Could you also provide detailed metadata for the rural weather stations in California, so I can compare them with the urban stations you previously listed?",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 0.9342395088803241,
+      "query": "Retrieve detailed metadata for all weather stations in California where the station type is classified as “rural,” including identifier, location coordinates, elevation, sensor list, data availability period, and any other descriptive attributes.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.6126444113193592,
+      "query": "Could you also provide detailed metadata for the rural weather stations in California, so I can compare them with the urban stations you previously listed?",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getWeatherStationInfo"
+    ]
+  },
+  {
+    "prompt": "Could you retrieve detailed metadata for the urban weather stations in Nevada?",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 0.9342395088803241,
+      "query": "Retrieve detailed metadata for all urban weather stations located in the state of Nevada.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "original",
+      "score": 0.6126444113193592,
+      "query": "Could you retrieve detailed metadata for the urban weather stations in Nevada?",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getWeatherStationInfo"
+    ]
+  },
+  {
+    "prompt": "What’s the opening theme for Attack on Titan, and how many episodes does My Hero Academia have?",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "What’s the opening theme for Attack on Titan, and how many episodes does My Hero Academia have?",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.4912498793219044,
+      "query": "1. Resolve the unique anime_id for **“Attack on Titan.”**  \n2. Using the obtained anime_id, request the opening theme information for that anime (requires an anime‑details lookup operation).  \n3. Resolve the unique anime_id for **“My Hero Academia.”**  \n4. Call **getAnimeAirDates** with parameters `{ \"anime_id\": <My Hero Academia ID>, \"include_episodes\": \"true\" }` to retrieve the full episode list, then count the episodes.  \n\n*Both the anime_id lookup steps must be performed before the respective data‑retrieval calls; the getAnimeAirDates tool is invoked once for My Hero Academia, while a separate (unspecified) anime‑details tool is needed to fetch the opening theme for Attack on Titan.*",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getOpeningTheme"
+    ]
+  },
+  {
+    "prompt": "I'm not entirely sure which specific form I should be looking at—could you suggest the most appropriate one based on a typical recent graduate’s employment situation? Also, I’m interested in the 2023 fiscal year guidelines.",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "I'm not entirely sure which specific form I should be looking at—could you suggest the most appropriate one based on a typical recent graduate’s employment situation? Also, I’m interested in the 2023 fiscal year guidelines.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": -14.230930323402335,
+      "query": "listDatasetFormats {\n  \"category\": \"2023 fiscal year employment guidelines for recent graduates\"\n}",
+      "top10_hit_count": 0
+    },
+    "gold_tools": [
+      "getTaxFormSubmissionGuidelines"
+    ]
+  },
+  {
+    "prompt": "Get the tax‑exempt organization contributions for a recent graduate filing Form 1040 (2023)",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Get the tax‑exempt organization contributions for a recent graduate filing Form 1040 (2023)",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.6126444113193592,
+      "query": "Fetch tax‑exempt organization contribution amounts for a recent graduate filing a 2023 Form 1040, specifying the tax year 2023 and the filing type “Form 1040”.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getTaxExemptOrganizationList"
+    ]
+  },
+  {
+    "prompt": "What audit history is available for taxpayer ID 987654321 between 2020‑01‑01 and 2022‑12‑31?",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "What audit history is available for taxpayer ID 987654321 between 2020‑01‑01 and 2022‑12‑31?",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_a",
+      "score": 0.3833166425669464,
+      "query": "Call **searchLegalProceedings** with the parameter **cnpj = \"987654321\"**.  \nAfter retrieving the proceedings, filter the returned audit entries to include only those whose audit dates fall between **2020‑01‑01** and **2022‑12‑31**.  \n\n(Only a single call to `searchLegalProceedings` is required; the date filtering is performed internally on the result set.)",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getTaxAuditHistory"
+    ]
+  },
+  {
+    "prompt": "Please export German-language news articles on renewable energy up to 2024-06-30. Please start from 2023-01-01.",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Please export German-language news articles on renewable energy up to 2024-06-30. Please start from 2023-01-01.",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.6126444113193592,
+      "query": "Retrieve German-language news articles on renewable energy published between 2023-01-01 and 2024-06-30.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "exportNewsFeed"
+    ]
+  },
+  {
+    "prompt": "Could you fetch the most recent news headlines for it and provide the dividend history for the fiscal year 2021?",
+    "chosen": {
+      "version": "rewrite_a",
+      "score": 1.5468839201996833,
+      "query": "Entity: target company (identified by name or ticker symbol).  \nStep 1: Resolve the company’s internal identifier if only a name/ticker is provided.  \nStep 2: Retrieve the most recent news headlines for the company (no date range limit, return the latest items).  \nStep 3: Retrieve the dividend payment history for the same company, filtered to fiscal year 2021 (include dates, amounts, and record count).  \nNote: Steps 2 and 3 are separate retrieval operations that may each require invoking the appropriate news‑fetch and dividend‑data tools once.",
+      "top10_hit_count": 2
+    },
+    "rejected": {
+      "version": "original",
+      "score": 1.4254893882022286,
+      "query": "Could you fetch the most recent news headlines for it and provide the dividend history for the fiscal year 2021?",
+      "top10_hit_count": 2
+    },
+    "gold_tools": [
+      "getStockNews",
+      "getDividendInfo"
+    ]
+  },
+  {
+    "prompt": "Could you also provide the most recent two news headlines for AAPL?",
+    "chosen": {
+      "version": "original",
+      "score": 0.9342395088803241,
+      "query": "Could you also provide the most recent two news headlines for AAPL?",
+      "top10_hit_count": 1
+    },
+    "rejected": {
+      "version": "rewrite_b",
+      "score": 0.4912498793219044,
+      "query": "Use **exportNewsFeed** to retrieve articles for the most recent period (e.g., startDate = today ‑ 7 days, endDate = today, language = \"en\"). After obtaining the CSV of articles, **filter** rows where the article content or title mentions the ticker “AAPL”, **sort** the filtered rows by publication date descending, and **select** the top 2 entries, returning only their headline strings. No additional tool calls are required.",
+      "top10_hit_count": 1
+    },
+    "gold_tools": [
+      "getStockNews"
+    ]
+  }
+]

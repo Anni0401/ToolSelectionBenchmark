@@ -74,3 +74,31 @@
 {"query": "Please find a vegetarian‑friendly restaurant within a 200‑meter radius of Le Potager du Marais (24 Rue Rambuteau) that offers outdoor seating, and give its name, address, and a brief description.", "gold_tools": ["searchPlace"]}
 {"query": "Could you tell me the founding date and current leader of the clan 'SilverSpear', and kindly include the member roster as well?", "gold_tools": ["getClanInfo"]}
 {"query": "Could you retrieve the founding date, current leader, and full member roster of the clan \"GoldenAxe\", and then compare the total number of members between SilverSpear and GoldenAxe?", "gold_tools": ["getClanInfo"]}
+{"query": "Please provide the liquidity score for ETH, using a depth of 5 order‑book levels.", "gold_tools": ["calculateLiquidityScore"]}
+{"query": "Calculate the liquidity score for BTC using a depth of 10 order‑book levels.", "gold_tools": ["calculateLiquidityScore"]}
+{"query": "BTC has a liquidity score of 88.7, could you also calculate the liquidity score for LTC using a depth of 8 order‑book levels and then compare the liquidity scores of BTC, ETH, and LTC to tell me which cryptocurrency currently has the highest liquidity?", "gold_tools": ["calculateLiquidityScore"]}
+{"query": "The guitarist I’m interested in is “John Doe” and his artist ID is **GTR12345**. Feel free to pull any upcoming shows for that ID.", "gold_tools": ["getConcertInfo"]}
+{"query": "The opening track’s ID for the March 12, 2024 Fillmore show is **TRK56789**. Please retrieve the lyrics for the opening track. Let me know if you need anything else.", "gold_tools": ["retrieveLyrics"]}
+{"query": "Let's go with **California** as the region—I’m interested in the urban weather stations there.", "gold_tools": ["getWeatherStationInfo"]}
+{"query": "Could you also provide detailed metadata for the rural weather stations in California, so I can compare them with the urban stations you previously listed?", "gold_tools": ["getWeatherStationInfo"]}
+{"query": "Could you retrieve detailed metadata for the urban weather stations in Nevada?", "gold_tools": ["getWeatherStationInfo"]}
+{"query": "Could you retrieve the administrative area for the location Arthur’s Seat using its OSGB36 eastings 330000 and northings 673000, and include the area code in the result?", "gold_tools": ["retrieveAdministrativeArea"]}
+{"query": "I’d like to obtain the administrative area and area code for Edinburgh Castle. I have the northings value 673500. The eastings coordinate for Edinburgh Castle is **330000**.", "gold_tools": ["retrieveAdministrativeArea"]}
+{"query": "Could you retrieve the administrative area and area code for the Royal Mile with eastings 332000 and northings 673200, and let me know if the area code matches the one you provided for this location earlier?", "gold_tools": ["retrieveAdministrativeArea"]}
+{"query": "Could you provide the total episode count for an anime series? The anime ID for *Attack on Titan* is **anime_164**. Let me know if you need anything else.", "gold_tools": ["getEpisodeCount"]}
+{"query": "What’s the opening theme for Attack on Titan, and how many episodes does My Hero Academia have?", "gold_tools": ["getOpeningTheme"]}
+{"query": "The anime ID for *My Hero Academia* is **anime_236**. How many episodes are there? Let me know if you need anything else.", "gold_tools": ["getEpisodeCount"]}
+{"query": "I'm not entirely sure which specific form I should be looking at—could you suggest the most appropriate one based on a typical recent graduate’s employment situation? Also, I’m interested in the 2023 fiscal year guidelines.", "gold_tools": ["getTaxFormSubmissionGuidelines"]}
+{"query": "Get the tax‑exempt organization contributions for a recent graduate filing Form 1040 (2023)", "gold_tools": ["getTaxExemptOrganizationList"]}
+{"query": "What audit history is available for taxpayer ID 987654321 between 2020‑01‑01 and 2022‑12‑31?", "gold_tools": ["getTaxAuditHistory"]}
+{"query": "Could you first obtain the latest update information for the Steam title identified by '111222', analyze whether the patch addresses multiplayer latency, and if it does, subsequently retrieve beta release details for the game with ID '333444' to assess upcoming features?", "gold_tools": ["getGameUpdates"]}
+{"query": "Retrieve the latest update for Steam game ID '555666' and determine whether the patch notes include any changes to the system requirements. If such changes are present, also fetch beta release details for game ID '777888' (with includeBeta = true) to see whether any new DLCs or major features are announced.", "gold_tools": ["getGameUpdates"]}
+{"query": "As part of my research on climate policy, I need a detailed export of all German-language news items spanning from startDate=2023-05-01 through endDate=2023-05-31, including any relevant opinion pieces and analysis, so that I can perform a thorough content analysis.", "gold_tools": ["exportNewsFeed"]}
+{"query": "I need a CSV export of German-language news items for June 2023, ending on 2023-06-30. Could you retrieve that for me?", "gold_tools": ["exportNewsFeed"]}
+{"query": "Please export German-language news articles on renewable energy up to 2024-06-30. Please start from 2023-01-01.", "gold_tools": ["exportNewsFeed"]}
+{"query": "I’ve located the Steam ID for “Ethereal Horizons” – it’s 1234567. Could you retrieve up to 15 of the latest news updates for this game, making sure to include any recent developer statements or community events?", "gold_tools": ["getGameNews"]}
+{"query": "I’d like to get the ten most recent news updates for the upcoming sci‑fi RPG “Starlight Odyssey” (Steam App ID 7654321), focusing on any developer announcements or community events.", "gold_tools": ["getGameNews"]}
+{"query": "I would like to review the dividend history of the relevant equity for the fiscal year 2020. The ticker symbol is **AAPL**. If you need it in any particular format, just let me know. Thanks!", "gold_tools": ["getDividendInfo"]}
+{"query": "Could you fetch the most recent news headlines for it and provide the dividend history for the fiscal year 2021?", "gold_tools": ["getStockNews", "getDividendInfo"]}
+{"query": "Could you also provide the most recent two news headlines for AAPL?", "gold_tools": ["getStockNews"]}
+

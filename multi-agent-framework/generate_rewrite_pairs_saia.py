@@ -224,7 +224,6 @@ def build_retrieval_prompt(user_query: str, sampled_tool_documents: str | list[s
     if isinstance(sampled_tool_documents, list):
         tools_block = "\n".join(str(item) for item in sampled_tool_documents)
     return (
-        "Rewrite the query for tool retrieval.\n\n"
         "Tool examples:\n"
         f"{tools_block}\n\n"
         "User query:\n"

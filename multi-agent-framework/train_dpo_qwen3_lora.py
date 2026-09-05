@@ -42,6 +42,27 @@ from trl import DPOConfig, DPOTrainer
 
 DEFAULT_MODEL = "Qwen/Qwen3-8B"
 
+REWRITE_PROMPT_TEMPLATE = (
+    "You rewrite user requests to improve retrieval of relevant tools.\n\n"
+    "Your task is NOT to answer the user and NOT to call any tools.\n\n"
+    "Rewrite the user request so that it clearly expresses:\n"
+    "- the entities involved;\n"
+    "- the intended operations;\n"
+    "- intermediate steps;\n"
+    "- identifiers that may need to be obtained;\n"
+    "- required filters, limits, dates, or arguments;\n"
+    "- whether the same tool must be called multiple times.\n\n"
+    "Use the terminology and operation style suggested by the example tool\n"
+    "definitions below. Do not invent tools or APIs. Preserve the user's\n"
+    "intent and all important argument values.\n\n"
+    "Example tool definitions:\n"
+    "{sampled_tool_documents}\n\n"
+    "Original user request:\n"
+    "{user_query}\n\n"
+    "Return only one rewritten retrieval query. Do not include explanations,\n"
+    "JSON, tool calls, or an answer."
+)
+
 
 @dataclass
 class PairRecord:
@@ -51,6 +72,13 @@ class PairRecord:
     group_key: str
     score_chosen: float | None
     score_rejected: float | None
+
+
+def build_training_prompt(original_query: str, sampled_tool_documents: str) -> str:
+    return REWRITE_PROMPT_TEMPLATE.format(
+        sampled_tool_documents=sampled_tool_documents,
+        user_query=original_query,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,6 +155,14 @@ def _safe_float(value: Any) -> float | None:
     return None
 
 
+def _sampled_examples_as_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value if str(item).strip()).strip()
+    return ""
+
+
 def _prompt_hash(prompt: str) -> str:
     return hashlib.sha1(prompt.encode("utf-8")).hexdigest()
 
@@ -157,7 +193,13 @@ def normalize_and_filter(rows: list[dict[str, Any]], group_mode: str) -> tuple[l
 
     cleaned: list[PairRecord] = []
     for row in rows:
-        prompt = _as_text(row.get("prompt"))
+        original_query = _as_text(row.get("original_query"))
+        sampled_tool_examples = _sampled_examples_as_text(row.get("sampled_tool_examples"))
+        prompt = ""
+        if original_query and sampled_tool_examples:
+            prompt = build_training_prompt(original_query, sampled_tool_examples)
+        else:
+            prompt = _as_text(row.get("prompt"))
         chosen = _as_text(row.get("chosen"))
         rejected = _as_text(row.get("rejected"))
 

@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, List
 
+import numpy as np
 from openai import OpenAI
 
 
@@ -138,20 +139,13 @@ def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
     if not vec_a:
         return 0.0
 
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    for a, b in zip(vec_a, vec_b):
-        fa = safe_float(a)
-        fb = safe_float(b)
-        dot += fa * fb
-        norm_a += fa * fa
-        norm_b += fb * fb
-
+    a = np.asarray([safe_float(v) for v in vec_a], dtype=np.float64)
+    b = np.asarray([safe_float(v) for v in vec_b], dtype=np.float64)
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
     if norm_a <= 0.0 or norm_b <= 0.0:
         return 0.0
-
-    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+    return float(np.dot(a, b) / (norm_a * norm_b))
 
 
 def embed_texts(client: OpenAI, model: str, texts: Iterable[str]) -> List[List[float]]:
@@ -256,19 +250,25 @@ def full_ranking_for_query(query_text: str, tool_order: list[str], tool_vectors:
 
 
 def rank_query_against_tools(query_embedding: list[float], tool_order: list[str], tool_vectors: dict[str, list[float]]) -> list[str]:
-    ranked_scores = []
-    for tool_id in tool_order:
-        vector = tool_vectors.get(tool_id)
-        if vector is None:
-            continue
-        score = cosine_similarity(query_embedding, vector)
-        ranked_scores.append((tool_id, score))
-    ranked_scores.sort(key=lambda item: item[1], reverse=True)
-    return [tool_id for tool_id, _ in ranked_scores]
+    valid_tool_names = [tool_id for tool_id in tool_order if tool_id in tool_vectors]
+    if not valid_tool_names:
+        return []
+
+    tool_matrix = np.vstack([np.asarray(tool_vectors[tool_id], dtype=np.float64) for tool_id in valid_tool_names])
+    query_vec = np.asarray(query_embedding, dtype=np.float64)
+    query_norm = np.linalg.norm(query_vec)
+    if query_norm <= 0.0:
+        return valid_tool_names
+
+    tool_norms = np.linalg.norm(tool_matrix, axis=1)
+    safe_tool_norms = np.where(tool_norms > 0.0, tool_norms, 1.0)
+    scores = (tool_matrix @ query_vec) / (safe_tool_norms * query_norm)
+    ranked_indices = np.argsort(-scores)
+    return [valid_tool_names[idx] for idx in ranked_indices]
 
 
 def build_retrieval_text(query_text: str, sampled_tool_examples: object | None = None) -> str:
-    """Return the retrieval input with the shared sample tools appended to the query."""
+    """Return the actual retrieval input: query + sampled tool examples, with no extra wrapper text."""
     query_text = str(query_text or "").strip()
     if not query_text:
         return ""
@@ -288,11 +288,7 @@ def build_retrieval_text(query_text: str, sampled_tool_examples: object | None =
         return query_text
 
     return (
-        "Rewrite the query for tool retrieval.\n\n"
-        "Tool examples:\n"
-        f"{examples_block}\n\n"
-        "User query:\n"
-        f"{query_text}"
+        f"Tool examples:\n{examples_block}\n\nUser query:\n{query_text}"
     )
 
 
@@ -419,26 +415,45 @@ def main() -> int:
                 skipped_no_candidates += 1
                 continue
 
-            choice = choose_preference(scores)
+            original_query = str(row.get("original_query", "")).strip()
+            sampled_examples = row.get("sampled_tool_examples") or row.get("prompt_template")
+            original_score = scores.get("original")
+            rewrite_scores = {name: score for name, score in scores.items() if name in {"rewrite_a", "rewrite_b"}}
+
+            if not rewrite_scores:
+                continue
+
+            if original_score is not None and max(rewrite_scores.values()) <= original_score + 1e-12:
+                continue
+
+            choice = choose_preference(rewrite_scores)
             if choice is None:
                 skipped_tie += 1
                 continue
 
             best_name, worst_name = choice
-            original_query = str(row.get("original_query", "")).strip()
-            sampled_examples = row.get("sampled_tool_examples") or row.get("prompt_template")
             prompt = build_retrieval_text(original_query, sampled_examples)
 
             chosen_query = str(candidates.get(best_name, "")).strip()
             rejected_query = str(candidates.get(worst_name, "")).strip()
+            if not chosen_query or not rejected_query:
+                continue
 
             dpo_rows.append({
+                "original_query": original_query,
+                "sampled_tool_examples": sampled_examples,
                 "prompt": prompt,
                 "chosen": chosen_query,
                 "rejected": rejected_query,
                 "gold_tools": gold_tools,
-                "score_chosen": scores[best_name],
-                "score_rejected": scores[worst_name],
+                "score_original": original_score,
+                "score_chosen": rewrite_scores[best_name],
+                "score_rejected": rewrite_scores[worst_name],
+                "scores": {
+                    "original": original_score,
+                    "rewrite_a": scores.get("rewrite_a"),
+                    "rewrite_b": scores.get("rewrite_b"),
+                },
             })
         except Exception as exc:
             print(f"[WARN] Skipping row {row_idx}: {exc}", file=sys.stderr)

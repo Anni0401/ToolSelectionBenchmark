@@ -267,6 +267,35 @@ def rank_query_against_tools(query_embedding: list[float], tool_order: list[str]
     return [tool_id for tool_id, _ in ranked_scores]
 
 
+def build_retrieval_text(query_text: str, sampled_tool_examples: object | None = None) -> str:
+    """Return the retrieval input with the shared sample tools appended to the query."""
+    query_text = str(query_text or "").strip()
+    if not query_text:
+        return ""
+
+    if sampled_tool_examples is None:
+        return query_text
+
+    if isinstance(sampled_tool_examples, list):
+        examples_block = "\n".join(str(item) for item in sampled_tool_examples)
+    elif isinstance(sampled_tool_examples, str):
+        examples_block = sampled_tool_examples
+    else:
+        return query_text
+
+    examples_block = str(examples_block).strip()
+    if not examples_block:
+        return query_text
+
+    return (
+        "Rewrite the query for tool retrieval.\n\n"
+        "Tool examples:\n"
+        f"{examples_block}\n\n"
+        "User query:\n"
+        f"{query_text}"
+    )
+
+
 def paper_rank_score(rank: int, cutoff: int = 10) -> float:
     """Return the paper's ranking reward for a one-based retrieval rank."""
     if rank <= cutoff:
@@ -372,13 +401,15 @@ def main() -> int:
                 "rewrite_a": row.get("rewrite1"),
                 "rewrite_b": row.get("rewrite2"),
             }
+            sampled_examples = row.get("sampled_tool_examples") or row.get("prompt_template")
             scores: dict[str, float] = {}
             hits_in_top10: dict[str, int] = {}
 
             for name, query_text in candidates.items():
                 if not isinstance(query_text, str) or not query_text.strip():
                     continue
-                query_embedding = embed_texts(client, args.model, [query_text])[0]
+                retrieval_text = build_retrieval_text(query_text, sampled_examples)
+                query_embedding = embed_texts(client, args.model, [retrieval_text])[0]
                 ranking = rank_query_against_tools(query_embedding, tool_order, tool_vectors)
                 score = candidate_score(ranking, gold_tools, cutoff=args.cutoff)
                 scores[name] = score
@@ -394,21 +425,20 @@ def main() -> int:
                 continue
 
             best_name, worst_name = choice
+            original_query = str(row.get("original_query", "")).strip()
+            sampled_examples = row.get("sampled_tool_examples") or row.get("prompt_template")
+            prompt = build_retrieval_text(original_query, sampled_examples)
+
+            chosen_query = str(candidates.get(best_name, "")).strip()
+            rejected_query = str(candidates.get(worst_name, "")).strip()
+
             dpo_rows.append({
-                "prompt": str(row.get("original_query", "")).strip(),
-                "chosen": {
-                    "version": best_name,
-                    "score": scores[best_name],
-                    "query": str(candidates.get(best_name, "")).strip(),
-                    "top10_hit_count": hits_in_top10.get(best_name, 0),
-                },
-                "rejected": {
-                    "version": worst_name,
-                    "score": scores[worst_name],
-                    "query": str(candidates.get(worst_name, "")).strip(),
-                    "top10_hit_count": hits_in_top10.get(worst_name, 0),
-                },
+                "prompt": prompt,
+                "chosen": chosen_query,
+                "rejected": rejected_query,
                 "gold_tools": gold_tools,
+                "score_chosen": scores[best_name],
+                "score_rejected": scores[worst_name],
             })
         except Exception as exc:
             print(f"[WARN] Skipping row {row_idx}: {exc}", file=sys.stderr)

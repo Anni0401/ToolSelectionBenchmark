@@ -2,7 +2,8 @@
 wild-tool-bench/.env
 multi-agent-framework/.env
 wild-tool-bench/.venv
-__pycache__/
+.venv-dpo
+__pycache__/h/
 *.py[cod]
 __pycache__/
 *.py[cod]

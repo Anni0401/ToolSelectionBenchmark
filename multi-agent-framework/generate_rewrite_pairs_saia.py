@@ -206,8 +206,10 @@ def generate_one_rewrite(
     tools_pool: list[dict],
     sampled_tools: int,
     rng: random.Random,
+    sampled_tool_documents: str | None = None,
 ) -> str:
-    sampled_tool_documents = sample_tool_documents(tools_pool, sampled_tools, rng)
+    if sampled_tool_documents is None:
+        sampled_tool_documents = sample_tool_documents(tools_pool, sampled_tools, rng)
     prompt = build_prompt(query, sampled_tool_documents)
     messages = [{"role": "user", "content": prompt}]
     rewrite = handler.request_model(messages)
@@ -215,6 +217,19 @@ def generate_one_rewrite(
     if not rewrite:
         raise RuntimeError("Model returned an empty rewrite")
     return rewrite
+
+
+def build_retrieval_prompt(user_query: str, sampled_tool_documents: str | list[str]) -> str:
+    tools_block = sampled_tool_documents
+    if isinstance(sampled_tool_documents, list):
+        tools_block = "\n".join(str(item) for item in sampled_tool_documents)
+    return (
+        "Rewrite the query for tool retrieval.\n\n"
+        "Tool examples:\n"
+        f"{tools_block}\n\n"
+        "User query:\n"
+        f"{user_query}"
+    )
 
 
 def main() -> int:
@@ -269,12 +284,14 @@ def main() -> int:
             continue
 
         try:
+            sampled_tool_documents = sample_tool_documents(tools_pool, args.sampled_tools, rng)
             rewrite1 = generate_one_rewrite(
                 handler=handler,
                 query=query,
                 tools_pool=tools_pool,
                 sampled_tools=args.sampled_tools,
                 rng=rng,
+                sampled_tool_documents=sampled_tool_documents,
             )
             rewrite2 = generate_one_rewrite(
                 handler=handler,
@@ -282,6 +299,7 @@ def main() -> int:
                 tools_pool=tools_pool,
                 sampled_tools=args.sampled_tools,
                 rng=rng,
+                sampled_tool_documents=sampled_tool_documents,
             )
         except Exception as exc:
             print(f"[{idx}/{total}] ERROR while rewriting query: {exc}", file=sys.stderr)
@@ -293,6 +311,8 @@ def main() -> int:
                 "rewrite1": rewrite1,
                 "rewrite2": rewrite2,
                 "gold_tools": gold_tools,
+                "sampled_tool_examples": sampled_tool_documents,
+                "prompt_template": build_retrieval_prompt(query, sampled_tool_documents),
             }
         )
         write_output_json(output_path, output_rows)

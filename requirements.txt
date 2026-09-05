@@ -8,3 +8,8 @@ tenacity==8.2.2
 jieba==0.42.1
 rouge==1.0.1
 langgraph
+transformers>=4.44
+datasets>=2.21
+accelerate>=0.34
+trl>=0.10
+peft>=0.12

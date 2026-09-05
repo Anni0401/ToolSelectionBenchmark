@@ -26,6 +26,14 @@ vllm = [
     "fastapi",
     "uvicorn[standard]",
 ]
+# Install with: uv sync --extra train
+train = [
+    "transformers>=4.44",
+    "datasets>=2.21",
+    "accelerate>=0.34",
+    "trl>=0.10",
+    "peft>=0.12",
+]
 # Install with: uv sync --extra dev
 dev = [
     "pytest",

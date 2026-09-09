@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -381,27 +382,44 @@ def main() -> int:
     grad_acc = compute_grad_acc(args.global_batch_size, args.per_device_train_batch_size)
     report_to = [] if args.report_to.lower() == "none" else [args.report_to]
 
-    dpo_args = DPOConfig(
-        output_dir=str(output_dir),
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        gradient_accumulation_steps=grad_acc,
-        num_train_epochs=args.epochs,
-        learning_rate=args.learning_rate,
-        beta=args.beta,
-        max_length=args.max_length,
-        max_prompt_length=args.max_prompt_length,
-        logging_steps=args.logging_steps,
-        save_strategy=args.save_strategy,
-        save_steps=args.save_steps,
-        remove_unused_columns=False,
-        bf16=args.bf16,
-        fp16=args.fp16,
-        eval_strategy="steps" if eval_dataset is not None else "no",
-        eval_steps=args.save_steps if eval_dataset is not None else None,
-        report_to=report_to,
-        seed=args.seed,
-    )
+    dpo_config_params = set(inspect.signature(DPOConfig.__init__).parameters)
+    dpo_kwargs: dict[str, Any] = {
+        "output_dir": str(output_dir),
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "per_device_eval_batch_size": args.per_device_eval_batch_size,
+        "gradient_accumulation_steps": grad_acc,
+        "num_train_epochs": args.epochs,
+        "learning_rate": args.learning_rate,
+        "beta": args.beta,
+        "max_length": args.max_length,
+        "logging_steps": args.logging_steps,
+        "save_strategy": args.save_strategy,
+        "save_steps": args.save_steps,
+        "remove_unused_columns": False,
+        "bf16": args.bf16,
+        "fp16": args.fp16,
+        "eval_steps": args.save_steps if eval_dataset is not None else None,
+        "report_to": report_to,
+        "seed": args.seed,
+    }
+
+    eval_strategy_value = "steps" if eval_dataset is not None else "no"
+    if "eval_strategy" in dpo_config_params:
+        dpo_kwargs["eval_strategy"] = eval_strategy_value
+    if "evaluation_strategy" in dpo_config_params:
+        dpo_kwargs["evaluation_strategy"] = eval_strategy_value
+
+    if "max_prompt_length" in dpo_config_params:
+        dpo_kwargs["max_prompt_length"] = args.max_prompt_length
+    elif "max_completion_length" in dpo_config_params:
+        dpo_kwargs["max_completion_length"] = max(1, args.max_length - args.max_prompt_length)
+
+    filtered_dpo_kwargs = {key: value for key, value in dpo_kwargs.items() if key in dpo_config_params and value is not None}
+    dropped_kwargs = sorted(key for key in dpo_kwargs if key not in filtered_dpo_kwargs)
+    if dropped_kwargs:
+        print(f"DPOConfig compatibility: dropped unsupported args {dropped_kwargs}")
+
+    dpo_args = DPOConfig(**filtered_dpo_kwargs)
 
     print("================ TRAINING CONFIG =================")
     print(f"Model:                  {args.model_name}")

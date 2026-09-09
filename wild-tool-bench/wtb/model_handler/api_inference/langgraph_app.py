@@ -2654,7 +2654,7 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         "- required filters, limits, dates, or arguments;\n"
         "- whether the same tool must be called multiple times.\n\n"
         "Use the terminology and operation style suggested by the example tool\n"
-        "definitions below. Do not invent tools or APIs. Preserve the user's\n"
+        "definitions below. They are only examples and not the available tools for this task. Don't try to find a fitting tool in the samples. Do not invent tools or APIs. Preserve the user's\n"
         "intent and all important argument values.\n\n"
         "Example tool definitions:\n"
         "{sampled_tool_documents}\n\n"

@@ -23,6 +23,7 @@ and we sample 5 synthetic tools from tool_schemas_cache.jsonl for each rewrite c
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import random
 import re
@@ -151,25 +152,85 @@ def write_output_json(path: Path, rows: list[dict]) -> None:
     tmp_path.replace(path)
 
 
-def validate_resume_prefix(existing_rows: list[dict], query_rows: list[dict]) -> None:
-    if len(existing_rows) > len(query_rows):
-        raise ValueError(
-            f"Existing output has {len(existing_rows)} rows but input only has {len(query_rows)} rows"
-        )
+def _stable_key(query: str, gold_tools: list) -> str:
+    return json.dumps(
+        {
+            "query": (query or "").strip(),
+            "gold_tools": gold_tools if isinstance(gold_tools, list) else [],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
-    for idx, existing in enumerate(existing_rows):
-        query = (query_rows[idx].get("query") or "").strip()
-        gold_tools = query_rows[idx].get("gold_tools", [])
-        if existing.get("original_query") != query:
-            raise ValueError(
-                "Existing output does not match input at row "
-                f"{idx + 1}: original_query mismatch"
-            )
-        if existing.get("gold_tools") != gold_tools:
-            raise ValueError(
-                "Existing output does not match input at row "
-                f"{idx + 1}: gold_tools mismatch"
-            )
+
+def _is_completed_output_row(row: dict) -> bool:
+    rewrite1 = clean_rewrite(str(row.get("rewrite1") or ""))
+    rewrite2 = clean_rewrite(str(row.get("rewrite2") or ""))
+    return bool(rewrite1 and rewrite2)
+
+
+def reconcile_resume_rows(
+    existing_rows: list[dict],
+    query_rows: list[dict],
+) -> tuple[list[dict | None], int, int, int]:
+    """Align existing output rows to input rows by logical key.
+
+    Returns:
+      - ordered rows aligned to query_rows (None marks missing/incomplete rows),
+      - count of reusable completed rows,
+      - count of missing/incomplete rows,
+      - count of orphan rows in existing output that did not match input keys.
+    """
+    buckets: dict[str, list[dict]] = collections.defaultdict(list)
+    for row in existing_rows:
+        key = _stable_key(
+            str(row.get("original_query") or "").strip(),
+            row.get("gold_tools", []),
+        )
+        buckets[key].append(row)
+
+    # Count keys expected from the input to report orphan rows in the existing output.
+    expected_counts = collections.Counter(
+        _stable_key((row.get("query") or "").strip(), row.get("gold_tools", []))
+        for row in query_rows
+    )
+    orphan_rows = 0
+    for key, rows in buckets.items():
+        extra = len(rows) - expected_counts.get(key, 0)
+        if extra > 0:
+            orphan_rows += extra
+
+    ordered_rows: list[dict | None] = []
+    reused = 0
+    missing = 0
+    for row in query_rows:
+        query = (row.get("query") or "").strip()
+        gold_tools = row.get("gold_tools", [])
+        key = _stable_key(query, gold_tools)
+        candidates = buckets.get(key, [])
+
+        selected: dict | None = None
+        while candidates:
+            candidate = candidates.pop(0)
+            if _is_completed_output_row(candidate):
+                selected = {
+                    "original_query": query,
+                    "rewrite1": clean_rewrite(str(candidate.get("rewrite1") or "")),
+                    "rewrite2": clean_rewrite(str(candidate.get("rewrite2") or "")),
+                    "gold_tools": gold_tools,
+                    "sampled_tool_examples": candidate.get("sampled_tool_examples", ""),
+                    "prompt_template": candidate.get("prompt_template", ""),
+                }
+                break
+
+        if selected is None:
+            ordered_rows.append(None)
+            missing += 1
+        else:
+            ordered_rows.append(selected)
+            reused += 1
+
+    return ordered_rows, reused, missing, orphan_rows
 
 
 def format_sampled_tool(tool: dict) -> str:
@@ -256,9 +317,15 @@ def main() -> int:
     handler = SAIAAPIHandler(model_name=args.model, temperature=args.temperature)
 
     if args.resume:
-        output_rows = load_existing_output(output_path)
-        validate_resume_prefix(output_rows, query_rows)
-        print(f"Resuming from existing output: {len(output_rows)} completed rows found")
+        existing_rows = load_existing_output(output_path)
+        aligned_rows, reused_count, missing_count, orphan_count = reconcile_resume_rows(existing_rows, query_rows)
+        output_rows: list[dict] = []
+
+        print(
+            "Resume reconcile: "
+            f"existing={len(existing_rows)}, reused={reused_count}, "
+            f"missing={missing_count}, orphaned={orphan_count}"
+        )
     else:
         output_rows = []
         if output_path.exists():
@@ -269,12 +336,25 @@ def main() -> int:
             return 1
 
     total = len(query_rows)
-    start_index = len(output_rows)
-    if start_index >= total:
+    if args.resume and not any(item is None for item in aligned_rows):
+        print(f"Nothing to do: output already contains all {total} rows")
+        write_output_json(output_path, [item for item in aligned_rows if item is not None])
+        return 0
+
+    if not args.resume and len(output_rows) >= total:
         print(f"Nothing to do: output already contains all {total} rows")
         return 0
 
-    for idx, row in enumerate(query_rows[start_index:], start=start_index + 1):
+    if args.resume:
+        iterable = enumerate(query_rows, start=1)
+    else:
+        iterable = enumerate(query_rows, start=1)
+
+    for idx, row in iterable:
+        if args.resume and aligned_rows[idx - 1] is not None:
+            output_rows.append(aligned_rows[idx - 1])
+            continue
+
         query = (row.get("query") or "").strip()
         gold_tools = row.get("gold_tools", [])
 

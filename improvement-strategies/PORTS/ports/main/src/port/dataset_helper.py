@@ -303,6 +303,10 @@ class DatasetDownloader():
         """Path to the locally provided ToolBench jsonl files (ports/datasets/ToolBench)."""
         return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "datasets", "ToolBench"))
 
+    def _local_bfcl_path(self):
+        """Path to the locally provided BFCL jsonl files (ports/datasets/BFCL)."""
+        return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "datasets", "BFCL"))
+
     def get_dataset(self):
         """
         Download and return the dataset
@@ -325,6 +329,13 @@ class DatasetDownloader():
             test_files = sorted(glob.glob(os.path.join(local_path, "test", "*.jsonl")))
             ds = load_dataset("json", data_files={"train": train_files, "test": test_files})
 
+        elif self.dataset_name == "bfcl" and os.path.isdir(self._local_bfcl_path()):
+            local_path = self._local_bfcl_path()
+            print(f"Loading local BFCL dataset from {local_path}")
+            train_files = sorted(glob.glob(os.path.join(local_path, "train", "*.jsonl")))
+            test_files = sorted(glob.glob(os.path.join(local_path, "test", "*.jsonl")))
+            ds = load_dataset("json", data_files={"train": train_files, "test": test_files})
+
         else:
             print(f"Loading {self.data_path} - {self.data_sub_split}")
             ds = load_dataset(self.data_path, self.data_sub_split)
@@ -342,7 +353,7 @@ class DatasetDownloader():
             for split in ds:
                 ds[split] = ds[split].filter(lambda x : x["group"] == split_group)
         
-        if self.dataset_name == "bfcl":
+        if self.dataset_name == "bfcl" and "test" not in ds:
             unique_k = list(ds.keys())[0]
             ds = ds[unique_k].train_test_split(test_size=0.3, seed=self.seed)
 

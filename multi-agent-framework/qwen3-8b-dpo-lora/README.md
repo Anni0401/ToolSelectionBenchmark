@@ -4,8 +4,8 @@ library_name: transformers
 model_name: qwen3-8b-dpo-lora
 tags:
 - generated_from_trainer
-- trl
 - dpo
+- trl
 licence: license
 ---
 

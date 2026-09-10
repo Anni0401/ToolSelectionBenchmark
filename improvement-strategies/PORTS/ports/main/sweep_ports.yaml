@@ -8,10 +8,10 @@
 # Submit the sbatch command multiple times to run several combinations in parallel
 # (each agent/job trains one combination at a time, then requests the next one).
 #
-# Full grid would be 3 (lr) * 2 (epochs) * 3 (lambda) * 2 (beta) * 2 (gamma) * 3 (batch) = 216 runs,
+# Full grid is now 3 (lr) * 2 (epochs) * 3 (lambda) * 2 (beta) * 2 (gamma) * 2 (accumulation) = 144 runs,
 # so this uses random search instead of grid. Cap total runs via: wandb agent --count N <SWEEP_ID>
-# train_batch_size=64 requires the 2-GPU model split (retriever + inference LLM on separate GPUs,
-# see scripts/run_ports_train_sbatch.sh / slurm_wandb_sweep_agent.sh --gres=gpu:2).
+# Physical batch is intentionally kept small to avoid OOM. Effective batch is controlled via
+# gradient accumulation: 2x12=24 and 2x32=64.
 #
 # Dataset is NOT swept here - it's fixed via the DATASET_NAME env var read by
 # scripts/train_ports_sweep.sh (default: bfcl). Best hyperparameters are dataset-specific,
@@ -35,7 +35,9 @@ parameters:
   gamma:
     values: [0.5, 1.0]
   train_batch_size:
-    values: [2, 24, 64]
+    values: [2]
+  gradient_accumulation_steps:
+    values: [12, 32]
 command:
   - ${env}
   - bash

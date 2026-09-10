@@ -161,6 +161,15 @@ def normalize_text(value: str) -> str:
     return text.strip()
 
 
+def ensure_prompt_boundary(prompt: str) -> str:
+    text = normalize_text(prompt)
+    if not text:
+        return text
+    if text.endswith("\n"):
+        return text
+    return text + "\n"
+
+
 def _safe_float(value: Any) -> float | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
@@ -209,9 +218,9 @@ def normalize_and_filter(rows: list[dict[str, Any]], group_mode: str) -> tuple[l
         sampled_tool_examples = normalize_text(_sampled_examples_as_text(row.get("sampled_tool_examples")))
         prompt = ""
         if original_query and sampled_tool_examples:
-            prompt = normalize_text(build_training_prompt(original_query, sampled_tool_examples))
+            prompt = ensure_prompt_boundary(build_training_prompt(original_query, sampled_tool_examples))
         else:
-            prompt = normalize_text(_as_text(row.get("prompt")))
+            prompt = ensure_prompt_boundary(_as_text(row.get("prompt")))
         chosen = normalize_text(_as_text(row.get("chosen")))
         rejected = normalize_text(_as_text(row.get("rejected")))
 

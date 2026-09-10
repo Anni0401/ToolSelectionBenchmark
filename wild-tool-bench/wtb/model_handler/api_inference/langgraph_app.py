@@ -1052,12 +1052,14 @@ class ToolReActToolSelector(ToolSelector):
     SYSTEM_PROMPT = (
         "You are a ReAct-style tool selection agent for benchmark tasks. "
         "Your goal is to decide which tools should be available to the executor model.\n\n"
+        "Critical output contract: /no_think\n"
+        "Do not emit chain-of-thought, commentary, or markdown. Only generate the required structured output.\n\n"
         "Tools:\n"
         "- You may use exactly one callable tool: tool_retreiver(subquery: string, k?: integer).\n"
         "- Use it to retrieve candidate tools relevant to a focused subquery.\n"
         "- You may call tool_retreiver multiple times and refine subqueries across iterations.\n\n"
         "Process (ReAct policy):\n"
-        "1) Think about whether retrieval is needed.\n"
+        "1) Decide whether retrieval is needed.\n"
         "2) If needed, call tool_retreiver.\n"
         "3) Read observations, update your plan, and optionally retrieve again.\n"
         "4) Aggregate information from all previous observations.\n"
@@ -1236,9 +1238,14 @@ class ToolReActToolSelector(ToolSelector):
         return serialized
 
     def _parse_final_tool_names(self, response_text: str) -> list:
-        """Parse final model response as a JSON array of tool names."""
+        """Parse final model response as a JSON array of tool names.
+
+        For this benchmark, malformed or non-JSON selector output is treated as an
+        empty tool set rather than an exception so one bad model answer does not fail
+        the entire task.
+        """
         if not isinstance(response_text, str) or not response_text.strip():
-            raise ValueError("toolreagt selector did not return a final tool list")
+            return []
 
         import re as _re
         clean = _re.sub(r"<think>.*?</think>", "", response_text, flags=_re.DOTALL).strip()
@@ -1249,10 +1256,13 @@ class ToolReActToolSelector(ToolSelector):
         except Exception:
             match = _re.search(r"\[.*\]", clean, _re.DOTALL)
             if match:
-                parsed = json.loads(match.group())
+                try:
+                    parsed = json.loads(match.group())
+                except Exception:
+                    return []
 
         if not isinstance(parsed, list):
-            raise ValueError(f"toolreagt selector final response is not a JSON list: {clean[:200]}")
+            return []
 
         names = []
         seen = set()
@@ -1297,7 +1307,7 @@ class ToolReActToolSelector(ToolSelector):
                     f"{conversation}\n\n"
                     "Follow a ReAct loop over tool_retreiver calls when needed. "
                     "Use observations from previous retrieval rounds to refine subqueries. "
-                    "Final answer must be ONLY a JSON array of tool names aggregated from your full reasoning process."
+                    "Final answer must be ONLY a JSON array of tool names; no prose, no markdown, no <think> tags, no extra commentary."
                 ),
             },
         ]
@@ -1328,6 +1338,15 @@ class ToolReActToolSelector(ToolSelector):
             }
 
             if not tool_calls:
+                candidate_names = self._parse_final_tool_names(response_text)
+                if candidate_names:
+                    iterations.append(iter_log)
+                    break
+                if iteration >= self.max_iter:
+                    print(f"[TOOLREAGT] max_iter reached with invalid final output; returning empty tool list")
+                    iterations.append(iter_log)
+                    final_response_text = "[]"
+                    break
                 iterations.append(iter_log)
                 break
 
@@ -1379,11 +1398,6 @@ class ToolReActToolSelector(ToolSelector):
                 )
 
             iterations.append(iter_log)
-        else:
-            raise RuntimeError(
-                f"toolreagt selector reached max_iter={self.max_iter} without finalizing a tool list"
-            )
-
         selected_names = self._parse_final_tool_names(final_response_text)
 
         # Mapping exactly like hierarchical strategy: filter real tool objects by name.
@@ -3579,6 +3593,20 @@ def _sanitize_history_for_gpt_oss(messages: list) -> list:
 
     return cleaned_messages
 
+def _get_vllm_template_kwargs(model_name: str | None = None) -> dict:
+    """Return vLLM chat-template kwargs for reasoning-capable models when supported.
+
+    Laguna/Poolside models are Qwen3-style reasoning backends in this benchmark setup,
+    so explicitly disabling thinking for tool-selection calls is the safest option.
+    We keep the flag guarded for non-reasoning models, and fall back gracefully if the
+    backend ignores the kwarg.
+    """
+    model_l = (model_name or "").lower()
+    if "qwen3" in model_l or "poolside" in model_l or "laguna" in model_l:
+        return {"enable_thinking": False}
+    return {}
+
+
 def _invoke_llm(messages: list, tools: list = None):
     """Invoke a local OpenAI/vLLM-compatible endpoint.
     
@@ -3588,6 +3616,7 @@ def _invoke_llm(messages: list, tools: list = None):
     api_key = os.getenv("EXECUTING_LLM_API_KEY", "EMPTY")
     model = os.getenv("EXECUTING_LLM_MODEL", "openai/gpt-oss-120b")
     parser_mode = _detect_tool_call_parser(model)
+    template_kwargs = _get_vllm_template_kwargs(model)
     
     if not base_url:
         # Simulated response for testing without a real LLM
@@ -3615,6 +3644,8 @@ def _invoke_llm(messages: list, tools: list = None):
         "temperature": 0.0,
         "top_p": 1.0,
     }
+    if template_kwargs:
+        payload["chat_template_kwargs"] = template_kwargs
     
     # Add tools if provided
     if tools:

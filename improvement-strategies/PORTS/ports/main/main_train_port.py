@@ -530,6 +530,7 @@ def train(dataset: Dataset,
            inference_max_seq_length: int = 1024,
            number_of_neg_examples: int = 3,
            train_batch_size: int = 2,
+           gradient_accumulation_steps: int = 1,
            eval_batch_size: int = 2,
            preprocessing_batch_size: int = 4,
            log_freq: int = 100,
@@ -583,6 +584,9 @@ def train(dataset: Dataset,
         inference_max_seq_length (int, optional): Max sequence length for the inference model. Defaults to 1024.
         number_of_neg_examples (int, optional): Number of negative examples per positive example. Defaults to 3.
         train_batch_size (int, optional): Batch size for training. Defaults to 2.
+        gradient_accumulation_steps (int, optional): Number of micro-batches to accumulate
+            before one optimizer update. Keeps objective unchanged while increasing effective
+            batch size. Defaults to 1 (disabled).
         eval_batch_size (int, optional): Batch size for evaluation. Defaults to 2.
         preprocessing_batch_size (int, optional): Batch size used during data preprocessing. Defaults to 4.
         log_freq (int, optional): Log training metrics every `log_freq` steps. Defaults to 100.
@@ -617,6 +621,8 @@ def train(dataset: Dataset,
         "weight_decay": weight_decay, # Add weight decay to config
         "scheduler_type" : scheduler_type,
         "train_batch_size" : train_batch_size,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "effective_train_batch_size": train_batch_size * gradient_accumulation_steps,
         "eval_batch_size" : eval_batch_size,
         "lambda_loss_factor" : lambda_loss,
         "retriever_max_seq_length" : retriever_max_seq_length,
@@ -692,6 +698,14 @@ def train(dataset: Dataset,
         log_to_wandb(scores_train_eval, epoch=0, steps=0, prefix="initial_train_eval")
 
     # ******************** Optimizer and Scheduler Setup ********************
+    if train_batch_size < 1:
+        raise ValueError("train_batch_size must be >= 1")
+    if gradient_accumulation_steps < 1:
+        raise ValueError("gradient_accumulation_steps must be >= 1")
+    effective_train_batch_size = train_batch_size * gradient_accumulation_steps
+    if effective_train_batch_size < 1:
+        raise ValueError("effective_train_batch_size must be >= 1")
+
     # Only optimize trainable params (e.g. LoRA adapters when the base model is frozen)
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, retr_model.parameters()),
@@ -700,12 +714,23 @@ def train(dataset: Dataset,
     )
 
     ds_length = len(dataset["train"])
-    # Calculate total training steps
-    n_iters = math.ceil(ds_length / train_batch_size) # Use math.ceil for accurate step count
-    num_training_steps = num_epochs * n_iters
+    # Calculate total optimizer update steps (scheduler/warmup should step on optimizer updates).
+    n_micro_steps_per_epoch = math.ceil(ds_length / train_batch_size)
+    n_optimizer_steps_per_epoch = math.ceil(n_micro_steps_per_epoch / gradient_accumulation_steps)
+    num_training_steps = num_epochs * n_optimizer_steps_per_epoch
     num_warmup_steps = int(num_training_steps * warmup_ratio)
-    logger.info(f"Dataset size: {ds_length}, Steps per epoch: {n_iters}")
-    logger.info(f"Total training steps: {num_training_steps}, Warmup steps: {num_warmup_steps} ({warmup_ratio*100:.1f}%)")
+    logger.info(
+        f"Dataset size: {ds_length}, Micro-steps/epoch: {n_micro_steps_per_epoch}, "
+        f"Optimizer-steps/epoch: {n_optimizer_steps_per_epoch}, "
+        f"Gradient accumulation: {gradient_accumulation_steps}, "
+        f"Effective train batch size: {effective_train_batch_size}"
+    )
+    logger.info(
+        f"Physical batch size: {train_batch_size} | "
+        f"Gradient accumulation: {gradient_accumulation_steps} | "
+        f"Effective batch size: {effective_train_batch_size}"
+    )
+    logger.info(f"Total optimizer steps: {num_training_steps}, Warmup steps: {num_warmup_steps} ({warmup_ratio*100:.1f}%)")
 
     lr_scheduler = get_scheduler(
         scheduler_type,
@@ -722,7 +747,10 @@ def train(dataset: Dataset,
     os.makedirs(save_dir, exist_ok=True) # Ensure save directory exists
 
     # ******************** Epoch Loop ********************
-    global_step_counter = 0 # Use a single counter across epochs and splits
+    global_step_counter = 0 # Counts micro-steps (batches)
+    optimizer_step_counter = 0 # Counts optimizer updates
+    accumulation_counter = 0
+    optimizer.zero_grad(set_to_none=True)
     for epoch in range(num_epochs):
         retr_model.train() # Set model to training mode
         data_splits = []
@@ -820,6 +848,8 @@ def train(dataset: Dataset,
             for batch_idx, batch in pbar:
                 global_step_counter += 1 # Increment global step counter
                 epoch_step_counter += 1 # Increment epoch step counter
+                did_optimizer_step = False
+                grad_norm = float("nan")
 
                 # --- Move batch tensors to device ---
                 queries = {k: v.to(device) for k, v in batch["query"].items()}
@@ -837,7 +867,11 @@ def train(dataset: Dataset,
                 bs = queries["input_ids"].size(0)
 
                 # --- Compute Similarities ---
-                pos_similarity = compute_similarity(retr_model, queries, pos_docs, device=device).view(bs, -1) # [bs, 1]
+                # Reuse query embeddings across pos/neg similarity terms to reduce memory pressure
+                # while keeping the original PORTS objective unchanged.
+                query_embeddings = compute_embeddings(retr_model, queries, device=device)
+                pos_doc_embeddings = compute_embeddings(retr_model, pos_docs, device=device)
+                pos_similarity = torch.sum(query_embeddings * pos_doc_embeddings, dim=-1, keepdim=True) # [bs, 1]
 
                 neg_similarity_list = []
                 n_neg_docs = neg_docs_processed["input_ids"].shape[1] # Number of negatives per query
@@ -847,11 +881,14 @@ def train(dataset: Dataset,
                     current_neg_data = {
                         k: neg_docs_processed[k][:, nid, :] for k in ['input_ids', 'attention_mask']
                     }
-                    this_neg_similarity = compute_similarity(retr_model, queries, current_neg_data, device=device).view(bs, -1) # [bs, 1]
+                    neg_doc_embeddings = compute_embeddings(retr_model, current_neg_data, device=device)
+                    this_neg_similarity = torch.sum(query_embeddings * neg_doc_embeddings, dim=-1, keepdim=True) # [bs, 1]
                     neg_similarity_list.append(this_neg_similarity)
+                    del neg_doc_embeddings
                 
                 neg_similarity = torch.stack(neg_similarity_list, dim=-1) # Shape: [bs, 1, num_neg]
                 neg_similarity = neg_similarity.squeeze(1) # Shape: [bs, num_neg]
+                del pos_doc_embeddings
 
                 # Concatenate positive and negative similarities: [bs, 1 + num_neg]
                 similarities = torch.cat((pos_similarity, neg_similarity), dim=-1)
@@ -868,8 +905,6 @@ def train(dataset: Dataset,
                 # --- Prepare Inference Model Inputs ---
                 input_prompt_pos = batch["q_pos_prompt"]
                 input_prompt_neg = batch["q_neg_prompt"]
-                input_prompt_pos = {k : input_prompt_pos[k].to(infer_device) for k in input_prompt_pos}
-                input_prompt_neg = [{k : neg_docs_trip[k].to(infer_device) for k in neg_docs_trip} for neg_docs_trip in input_prompt_neg]
                 
                 # --- Compute Perplexities (Q) using Frozen LLM ---
                 pos_perplexity = []
@@ -877,14 +912,16 @@ def train(dataset: Dataset,
 
                 with torch.no_grad(): # Ensure no gradients are computed for the inference model
                     # --- Positive Perplexity ---
-                    # Create a temporary dataset/dataloader for the positive prompts for the collator
-                    pos_dataloader = DataLoader(
-                        Dataset.from_dict(input_prompt_pos), 
-                        shuffle=False, 
-                        batch_size=bs, # Process the whole batch at once
-                        collate_fn=data_collator_completion) # Use the completion-only collator
-                    
-                    pos_data_batch = next(iter(pos_dataloader)) # Get the collated batch
+                    # Collate on CPU first; only then move tensors to infer_device.
+                    # Avoids Arrow conversion of CUDA tensors and related illegal memory access.
+                    pos_examples = [
+                        {
+                            "input_ids": input_prompt_pos["input_ids"][bid].detach().cpu(),
+                            "attention_mask": input_prompt_pos["attention_mask"][bid].detach().cpu(),
+                        }
+                        for bid in range(bs)
+                    ]
+                    pos_data_batch = data_collator_completion(pos_examples)
                     pos_data_batch = {k: v.to(infer_device) for k, v in pos_data_batch.items()}
                     labels = pos_data_batch.pop("labels") # Labels prepared by collator
 
@@ -895,18 +932,18 @@ def train(dataset: Dataset,
                                                     attention_mask=pos_data_batch["attention_mask"],
                                                     padding_token_ids=retr_tokenizer.pad_token_id)
 
-                    del outputs_pos, pos_data_batch, labels, pos_dataloader
-                    torch.cuda.empty_cache()
+                    del outputs_pos, pos_data_batch, labels, pos_examples
 
                     # --- Negative Perplexity ---
                     for n_id in range(n_neg_docs):
-                        neg_data = next(iter(DataLoader(
-                            Dataset.from_dict(
-                                {k: torch.stack([input_prompt_neg[bid][k][n_id,:] for bid in range(bs)]) 
-                                for k in ["input_ids", "attention_mask"]}), 
-                            shuffle=False, 
-                            batch_size=bs, 
-                            collate_fn=data_collator_completion)))
+                        neg_examples = [
+                            {
+                                "input_ids": input_prompt_neg[bid]["input_ids"][n_id, :].detach().cpu(),
+                                "attention_mask": input_prompt_neg[bid]["attention_mask"][n_id, :].detach().cpu(),
+                            }
+                            for bid in range(bs)
+                        ]
+                        neg_data = data_collator_completion(neg_examples)
                         
                         neg_data = {k: v.to(infer_device) for k, v in neg_data.items()}
                         labels = neg_data.pop("labels")
@@ -918,8 +955,7 @@ def train(dataset: Dataset,
                                                                   attention_mask=neg_data["attention_mask"],
                                                                   padding_token_ids=infer_tokenizer.pad_token_id)) # Use infer tokenizer pad id
 
-                        del outputs_neg, neg_data, labels
-                        torch.cuda.empty_cache()
+                        del outputs_neg, neg_data, labels, neg_examples
 
                 # Stack negative perplexities: [bs, num_neg]
                 neg_perplexity = torch.stack(neg_perplexity_list, dim=-1)
@@ -934,7 +970,7 @@ def train(dataset: Dataset,
                 Q = Q.to(device) # Move to the retriever's device (Q was computed on infer_device)
 
                 del concat_perplexities, pos_perplexity, neg_perplexity, neg_perplexity_list
-                torch.cuda.empty_cache()
+                del query_embeddings
 
                 # --- Compute KL Divergence Loss (RePlug Component) ---
                 ppl_pr_KL_loss = compute_loss(Q, Pr_retr, kl_div) # Check compute_loss implementation details
@@ -971,14 +1007,25 @@ def train(dataset: Dataset,
                 loss = ppl_pr_KL_loss - lambda_loss * pref_loss
 
                 # --- Backpropagation and Optimization ---
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(retr_model.parameters(), max_norm=1.0) # Gradient clipping
-                optimizer.step() # Update retriever weights
-                lr_scheduler.step() # Update learning rate
-                
-                grad_norm = get_gradient_norm(retr_model) # Get gradient norm for logging
-
-                optimizer.zero_grad() # Clear gradients for next step
+                (loss / gradient_accumulation_steps).backward()
+                accumulation_counter += 1
+                is_last_batch = (batch_idx + 1) == steps_per_split
+                should_step = (accumulation_counter == gradient_accumulation_steps) or is_last_batch
+                if should_step:
+                    # Keep updates equal to the MEAN gradient even for a partial final window.
+                    if accumulation_counter < gradient_accumulation_steps:
+                        scale = gradient_accumulation_steps / accumulation_counter
+                        for param in retr_model.parameters():
+                            if param.grad is not None:
+                                param.grad.mul_(scale)
+                    torch.nn.utils.clip_grad_norm_(retr_model.parameters(), max_norm=1.0) # Gradient clipping
+                    grad_norm = get_gradient_norm(retr_model) # Get gradient norm before step for logging
+                    optimizer.step() # Update retriever weights
+                    lr_scheduler.step() # Update learning rate
+                    optimizer.zero_grad(set_to_none=True) # Clear gradients for next accumulation window
+                    optimizer_step_counter += 1
+                    did_optimizer_step = True
+                    accumulation_counter = 0
                 
                 # --- Log Metrics ---
                 epoch_loss += loss.item() # Accumulate loss for epoch average
@@ -1008,21 +1055,30 @@ def train(dataset: Dataset,
                         "similarity/positive_mean": pos_similarity.mean().cpu(),
                         "similarity/negative_mean": neg_similarity.mean().cpu(), # Mean over all negatives
                         "optimizer/gradient_norm": grad_norm,
+                        "optimizer/did_step": int(did_optimizer_step),
+                        "optimizer/step": optimizer_step_counter,
                         "optimizer/learning_rate": optimizer.param_groups[0]['lr'],
                         "progress/epoch": epoch + 1,
-                        "progress/step": global_step_counter # Use global step counter
+                        "progress/step": global_step_counter, # Use global step counter
+                        "progress/micro_step": global_step_counter,
+                        "progress/effective_batch_size": effective_train_batch_size,
                     }
                     wandb.log(log_metrics, step=global_step_counter)
+                    logger.info(
+                        f"micro_step={global_step_counter} "
+                        f"optimizer_step={optimizer_step_counter} "
+                        f"effective_batch={effective_train_batch_size} "
+                        f"did_step={int(did_optimizer_step)}"
+                    )
 
                 # --- Cleanup Batch Tensors ---
                 del Q, Pr_retr, ppl_pr_KL_loss, pref_loss, loss, pos_retrieval_prob, neg_retrieval_probs
                 del avg_pref_ratio, retrieval_accuracy, avg_mean_prob_ratio
                 del similarities, pos_similarity, neg_similarity
                 del queries, pos_docs, neg_docs_processed, input_prompt_pos, input_prompt_neg
-                torch.cuda.empty_cache()
 
                 # ******************** Step-based Evaluation Trigger ********************
-                if eval_strategy == "steps" and evaluation_step_interval is not None and global_step_counter % evaluation_step_interval == 0:
+                if eval_strategy == "steps" and evaluation_step_interval is not None and global_step_counter % evaluation_step_interval == 0 and did_optimizer_step:
                     logger.info(f"--- Running Step-Based Evaluation (Step: {global_step_counter}, {((epoch_step_counter/total_epoch_steps)*100):.1f}% through epoch) ---")
                     eval_config_step = {
                         "retr_model" : retr_model,
@@ -1051,7 +1107,7 @@ def train(dataset: Dataset,
                     retr_model.train() # Ensure model is back in train mode after eval
 
                 # ******************** Step-based Checkpoint Saving ********************
-                if save_strategy == "steps" and save_steps and global_step_counter % save_steps == 0 and save_checkpoints:
+                if save_strategy == "steps" and save_steps and global_step_counter % save_steps == 0 and save_checkpoints and did_optimizer_step:
                     save_path = os.path.join(save_dir, f"checkpoint-step-{global_step_counter}")
                     logger.info(f"Saving checkpoint at step {global_step_counter} to {save_path}")
                     retr_model.save_pretrained(save_path)
@@ -1175,6 +1231,7 @@ def main():
 
     # --- Batch Size & Tokenizer Args ---
     parser.add_argument('--train_batch_size', type=int,default=2, help="Batch size for the training dataloader.")
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help="Number of micro-batches to accumulate before one optimizer step.")
     parser.add_argument('--eval_batch_size', type=int, default=2, help="Batch size for the evaluation dataloader.")
     parser.add_argument('--preprocessing_batch_size', type=int, default=4, help="Batch size used during the dataset preprocessing phase (in dataloader).")
     parser.add_argument('--padding_side', type=str, default="left", help="Padding side for both tokenizers ('left' or 'right'). Use 'left' for last-token-pooling retrievers such as Qwen embedding models.")
@@ -1411,6 +1468,7 @@ def main():
         "inference_max_seq_length" : args.inference_max_seq_length,
         "number_of_neg_examples" : args.n_neg_examples,
         "train_batch_size" : args.train_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
         "eval_batch_size" : args.eval_batch_size,
         "preprocessing_batch_size" : args.preprocessing_batch_size,
         "learning_rate" : args.lr,

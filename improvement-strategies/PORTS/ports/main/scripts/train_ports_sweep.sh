@@ -19,6 +19,7 @@ PADDING_SIDE="${PADDING_SIDE:-left}"
 N_NEGS="${N_NEGS:-3}"
 LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2}"
+GRAD_ACC_STEPS="${GRAD_ACC_STEPS:-1}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-4}"
 PREPROCESS_BATCH_SIZE="${PREPROCESS_BATCH_SIZE:-16}"
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-PORTS_Sweep}"
@@ -48,6 +49,10 @@ echo "===================================================="
 echo "W&B sweep run - fixed params + swept overrides: $*"
 echo "===================================================="
 
+# CUDA allocator defaults to reduce fragmentation spikes on long sweeps.
+# Can be overridden from the environment per job.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:256}"
+
 # NOTE: no --lr/--n_epochs/--lambda_loss/--beta/--gamma/--wandb_run_name here -
 # they are supplied by the W&B agent via "$@" and/or use main_train_port.py's
 # own defaults; "$@" is appended last so it always wins over any duplicate flag.
@@ -59,6 +64,7 @@ python3 "$PYTHON_SCRIPT" \
     --inference_max_seq_length "$INFERENCE_MAX_SEQ_LEN" \
     --lr_type "$LR_SCHEDULER" \
     --train_batch_size "$TRAIN_BATCH_SIZE" \
+    --gradient_accumulation_steps "$GRAD_ACC_STEPS" \
     --eval_batch_size "$EVAL_BATCH_SIZE" \
     --preprocessing_batch_size "$PREPROCESS_BATCH_SIZE" \
     --padding_side "$PADDING_SIDE" \

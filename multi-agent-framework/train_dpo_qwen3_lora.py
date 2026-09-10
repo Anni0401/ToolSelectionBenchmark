@@ -30,6 +30,7 @@ import json
 import math
 import os
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -150,6 +151,16 @@ def _as_text(value: Any) -> str:
     return ""
 
 
+def normalize_text(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.replace("\u00a0", " ").replace("\u200b", "").replace("\u2060", "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip()
+
+
 def _safe_float(value: Any) -> float | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
@@ -194,15 +205,15 @@ def normalize_and_filter(rows: list[dict[str, Any]], group_mode: str) -> tuple[l
 
     cleaned: list[PairRecord] = []
     for row in rows:
-        original_query = _as_text(row.get("original_query"))
-        sampled_tool_examples = _sampled_examples_as_text(row.get("sampled_tool_examples"))
+        original_query = normalize_text(_as_text(row.get("original_query")))
+        sampled_tool_examples = normalize_text(_sampled_examples_as_text(row.get("sampled_tool_examples")))
         prompt = ""
         if original_query and sampled_tool_examples:
-            prompt = build_training_prompt(original_query, sampled_tool_examples)
+            prompt = normalize_text(build_training_prompt(original_query, sampled_tool_examples))
         else:
-            prompt = _as_text(row.get("prompt"))
-        chosen = _as_text(row.get("chosen"))
-        rejected = _as_text(row.get("rejected"))
+            prompt = normalize_text(_as_text(row.get("prompt")))
+        chosen = normalize_text(_as_text(row.get("chosen")))
+        rejected = normalize_text(_as_text(row.get("rejected")))
 
         if not prompt or not chosen or not rejected:
             stats["skip_missing_field"] += 1
@@ -231,6 +242,20 @@ def normalize_and_filter(rows: list[dict[str, Any]], group_mode: str) -> tuple[l
 
     stats["kept"] = len(cleaned)
     return cleaned, stats
+
+
+def filter_mismatched_prefixes(tokenizer: Any, rows: list[PairRecord]) -> tuple[list[PairRecord], int]:
+    kept: list[PairRecord] = []
+    dropped = 0
+    for row in rows:
+        prompt_ids = tokenizer(row.prompt, add_special_tokens=False)["input_ids"]
+        chosen_ids = tokenizer(row.prompt + row.chosen, add_special_tokens=False)["input_ids"]
+        rejected_ids = tokenizer(row.prompt + row.rejected, add_special_tokens=False)["input_ids"]
+        if chosen_ids[: len(prompt_ids)] != prompt_ids or rejected_ids[: len(prompt_ids)] != prompt_ids:
+            dropped += 1
+            continue
+        kept.append(row)
+    return kept, dropped
 
 
 def split_grouped(pairs: list[PairRecord], val_ratio: float, seed: int) -> tuple[list[PairRecord], list[PairRecord]]:
@@ -345,10 +370,25 @@ def main() -> int:
     print(f"Validation pairs:       {len(val_rows)}")
     print("==================================================")
 
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    train_rows, dropped_train = filter_mismatched_prefixes(tokenizer, train_rows)
+    if val_rows:
+        val_rows, dropped_val = filter_mismatched_prefixes(tokenizer, val_rows)
+    else:
+        dropped_val = 0
+
+    print(f"Dropped mismatched DPO prefixes (train): {dropped_train}")
+    print(f"Dropped mismatched DPO prefixes (val):   {dropped_val}")
+
+    if len(train_rows) < 1:
+        raise ValueError("After filtering tokenization mismatches, no valid DPO train rows remain.")
+
     train_dataset = to_dataset(train_rows)
     eval_dataset = to_dataset(val_rows) if val_rows else None
-
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"

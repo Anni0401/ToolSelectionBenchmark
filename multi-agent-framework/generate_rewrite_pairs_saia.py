@@ -1,23 +1,28 @@
 """
-Generate two independent high-temperature rewrites per query via SAIA (openai-gpt-oss-120b).
+Generate N independent high-temperature rewrite pairs per query via SAIA (openai-gpt-oss-120b).
 
 Input format (jsonl):
     {"query": "...", "gold_tools": ["toolA", "toolB"]}
 
-Output format (json):
+Output format (json), with one entry per (task, pair_index) so each unique task
+yields ``--num-pairs`` independent rewrite pairs (default: 25):
 [
   {
     "original_query": "...",
     "rewrite1": "...",
     "rewrite2": "...",
-    "gold_tools": ["..."]
+    "gold_tools": ["..."],
+    "pair_index": 0
   },
   ...
 ]
 
-The rewrite prompt is copied from the rewrite selection strategy
-(Qwen3QueryRewriteEmbeddingContextToolSelector.REWRITE_PROMPT_TEMPLATE),
-and we sample 5 synthetic tools from tool_schemas_cache.jsonl for each rewrite call.
+The rewrite prompt is copied verbatim from the rewrite selection strategy
+(Qwen3QueryRewriteEmbeddingContextToolSelector.REWRITE_PROMPT_TEMPLATE in
+langgraph_app.py), and we sample 5 synthetic tools from tool_schemas_cache.jsonl
+for each rewrite call. The sampled tools are only examples of terminology/style,
+not the tools actually available to solve the task -- the prompt says so
+explicitly to stop the model from trying to match the task to one of them.
 """
 
 from __future__ import annotations
@@ -47,8 +52,10 @@ REWRITE_PROMPT_TEMPLATE = (
     "- required filters, limits, dates, or arguments;\n"
     "- whether the same tool must be called multiple times.\n\n"
     "Use the terminology and operation style suggested by the example tool\n"
-    "definitions below. Do not invent tools or APIs. Preserve the user's\n"
-    "intent and all important argument values.\n\n"
+    "definitions below. They are only examples and not the available tools for\n"
+    "this task. Don't try to find a fitting tool in the samples. Do not invent\n"
+    "tools or APIs. Preserve the user's intent and all important argument\n"
+    "values.\n\n"
     "Example tool definitions:\n"
     "{sampled_tool_documents}\n\n"
     "Original user request:\n"
@@ -98,6 +105,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="How many synthetic tools to sample per rewrite call",
+    )
+    parser.add_argument(
+        "--num-pairs",
+        type=int,
+        default=25,
+        help="How many independent rewrite pairs to generate per unique task",
     )
     parser.add_argument(
         "--seed",
@@ -152,15 +165,25 @@ def write_output_json(path: Path, rows: list[dict]) -> None:
     tmp_path.replace(path)
 
 
-def _stable_key(query: str, gold_tools: list) -> str:
+def _stable_key(query: str, gold_tools: list, pair_index: int) -> str:
     return json.dumps(
         {
             "query": (query or "").strip(),
             "gold_tools": gold_tools if isinstance(gold_tools, list) else [],
+            "pair_index": pair_index,
         },
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+def expand_query_rows(query_rows: list[dict], num_pairs: int) -> list[dict]:
+    """Repeat each unique task ``num_pairs`` times, tagged with a pair_index."""
+    expanded: list[dict] = []
+    for row in query_rows:
+        for pair_index in range(num_pairs):
+            expanded.append({**row, "pair_index": pair_index})
+    return expanded
 
 
 def _is_completed_output_row(row: dict) -> bool:
@@ -186,12 +209,13 @@ def reconcile_resume_rows(
         key = _stable_key(
             str(row.get("original_query") or "").strip(),
             row.get("gold_tools", []),
+            row.get("pair_index", 0),
         )
         buckets[key].append(row)
 
     # Count keys expected from the input to report orphan rows in the existing output.
     expected_counts = collections.Counter(
-        _stable_key((row.get("query") or "").strip(), row.get("gold_tools", []))
+        _stable_key((row.get("query") or "").strip(), row.get("gold_tools", []), row.get("pair_index", 0))
         for row in query_rows
     )
     orphan_rows = 0
@@ -206,7 +230,8 @@ def reconcile_resume_rows(
     for row in query_rows:
         query = (row.get("query") or "").strip()
         gold_tools = row.get("gold_tools", [])
-        key = _stable_key(query, gold_tools)
+        pair_index = row.get("pair_index", 0)
+        key = _stable_key(query, gold_tools, pair_index)
         candidates = buckets.get(key, [])
 
         selected: dict | None = None
@@ -218,6 +243,7 @@ def reconcile_resume_rows(
                     "rewrite1": clean_rewrite(str(candidate.get("rewrite1") or "")),
                     "rewrite2": clean_rewrite(str(candidate.get("rewrite2") or "")),
                     "gold_tools": gold_tools,
+                    "pair_index": pair_index,
                     "sampled_tool_examples": candidate.get("sampled_tool_examples", ""),
                     "prompt_template": candidate.get("prompt_template", ""),
                 }
@@ -310,6 +336,7 @@ def main() -> int:
     query_rows = load_jsonl(input_path)
     if args.max_items is not None:
         query_rows = query_rows[: args.max_items]
+    query_rows = expand_query_rows(query_rows, args.num_pairs)
 
     tools_pool = load_jsonl(tools_file)
     rng = random.Random(args.seed)
@@ -357,6 +384,7 @@ def main() -> int:
 
         query = (row.get("query") or "").strip()
         gold_tools = row.get("gold_tools", [])
+        pair_index = row.get("pair_index", 0)
 
         if not query:
             print(f"[{idx}/{total}] WARNING: empty query, skipping")
@@ -390,13 +418,14 @@ def main() -> int:
                 "rewrite1": rewrite1,
                 "rewrite2": rewrite2,
                 "gold_tools": gold_tools,
+                "pair_index": pair_index,
                 "sampled_tool_examples": sampled_tool_documents,
                 "prompt_template": build_retrieval_prompt(query, sampled_tool_documents),
             }
         )
         write_output_json(output_path, output_rows)
 
-        print(f"[{idx}/{total}] rewrites generated")
+        print(f"[{idx}/{total}] rewrites generated (pair {pair_index + 1}/{args.num_pairs})")
 
     print(f"Wrote {len(output_rows)} records to {output_path}")
     return 0

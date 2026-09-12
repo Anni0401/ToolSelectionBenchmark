@@ -1353,15 +1353,28 @@ class ToolReActToolSelector(ToolSelector):
             for tc in tool_calls:
                 func = tc.get("function", {}) if isinstance(tc, dict) else {}
                 name = func.get("name", "") if isinstance(func, dict) else ""
+                tool_call_id = tc.get("id", f"tool_call_{iteration}") if isinstance(tc, dict) else f"tool_call_{iteration}"
+
                 if name not in ("tool_retreiver", "tool_retriever"):
-                    raise ValueError(
-                        "toolreagt selector called unsupported tool; only 'tool_retreiver' is allowed"
+                    # Malformed tool call from the model. Feed an error observation back
+                    # into the ReAct loop instead of aborting the whole request with a 500,
+                    # so a single bad model turn doesn't fail the entire benchmark task.
+                    error_msg = f"Error: unsupported tool '{name}'; only 'tool_retreiver' is allowed."
+                    react_messages.append(
+                        {"role": "tool", "tool_call_id": tool_call_id, "name": name or "unknown", "content": error_msg}
                     )
+                    iter_log["tool_calls"].append({"name": name, "error": error_msg})
+                    continue
 
                 args = self._parse_tool_args(func.get("arguments", {}))
                 subquery = args.get("subquery") or args.get("query") or ""
                 if not isinstance(subquery, str) or not subquery.strip():
-                    raise ValueError("tool_retreiver call is missing non-empty 'subquery'")
+                    error_msg = "Error: tool_retreiver call is missing non-empty 'subquery'; retry with a valid subquery."
+                    react_messages.append(
+                        {"role": "tool", "tool_call_id": tool_call_id, "name": "tool_retreiver", "content": error_msg}
+                    )
+                    iter_log["tool_calls"].append({"name": "tool_retreiver", "error": error_msg})
+                    continue
 
                 candidates, effective_k = self._retrieve_candidates(all_tools, subquery, args.get("k"))
                 serialized = self._serialize_candidates(candidates)
@@ -1380,7 +1393,7 @@ class ToolReActToolSelector(ToolSelector):
                 react_messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tc.get("id", f"tool_call_{iteration}"),
+                        "tool_call_id": tool_call_id,
                         "name": "tool_retreiver",
                         "content": tool_content,
                     }

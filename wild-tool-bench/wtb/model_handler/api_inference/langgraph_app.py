@@ -249,6 +249,77 @@ class ToolSelector(ABC):
         pass
 
 
+class OracleToolSelector(ToolSelector):
+    """
+    Oracle baseline:
+
+    Always pass exactly the tools supplied by WTB for the current task
+    (i.e. the gold/ground-truth tool set), with no synthetic distractors
+    added and no filtering/selection logic applied. This gives an upper
+    bound on executor performance when tool selection is perfect.
+    """
+
+    @staticmethod
+    def _sanitize_tool(tool: dict) -> Optional[dict]:
+        """Convert a tool to the standard OpenAI function-tool schema."""
+        if not isinstance(tool, dict):
+            return None
+
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return None
+
+        name = str(func.get("name", "")).strip()
+        description = str(func.get("description", "")).strip()
+        parameters = func.get("parameters")
+
+        if not name or not description or not isinstance(parameters, dict):
+            return None
+
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": copy.deepcopy(parameters),
+            },
+        }
+
+    def select(self, messages: list, tools: list) -> list:
+        """Return the WTB gold tools for this task, unmodified and unfiltered."""
+        gold_tools = []
+
+        for tool in tools or []:
+            clean_tool = self._sanitize_tool(tool)
+            if clean_tool is not None:
+                gold_tools.append(clean_tool)
+
+        query = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    query = content[:500]
+                break
+
+        log_tool_selection(
+            strategy_name="oracle",
+            query=query,
+            available_tools_count=len(gold_tools),
+            selected_tools=gold_tools,
+            selection_metadata={"method": "wtb_gold_tools_only"},
+        )
+
+        print("\n[ORACLE SELECTOR]")
+        print(f"  Gold tools passed to executor: {len(gold_tools)}")
+        for tool in gold_tools:
+            name = tool.get("function", {}).get("name", "unknown")
+            print(f"    [GOLD] {name}")
+        print()
+
+        return gold_tools
+
+
 class InContextToolSelector(ToolSelector):
     """
     In-context baseline:
@@ -3757,7 +3828,9 @@ def _create_tool_selector(mode: str) -> ToolSelector:
     """Create a tool selector based on mode."""
     mode = mode.lower() if mode else "in_context"
     
-    if mode == "hierarchical":
+    if mode == "oracle":
+        return OracleToolSelector()
+    elif mode == "hierarchical":
         return HierarchicalToolSelector()
     elif mode == "toolreagt":
         return ToolReActToolSelector(max_iter=10)
@@ -3975,6 +4048,7 @@ def run(host="127.0.0.1", port=8001):
     print(f"  EXECUTING_LLM_API_KEY: {'***SET***' if os.getenv('EXECUTING_LLM_API_KEY') else 'EMPTY (default)'}")
     print(f"\nAvailable modes:")
     print(f"  1. 'in_context' - LLM decides which tools to use (default)")
+    print(f"  1.1. 'oracle' - always passes exactly the gold WTB tools for the task")
     print(f"  2. 'hierarchical' - Smaller LLM selects relevant tools first")
     print(f"  2.1. 'toolreagt' - ReAct selector using tool_retreiver iterations")
     print(f"  3. 'embedding' - OpenAI text-embedding-3-small (cached)")

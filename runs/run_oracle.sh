@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=wtb-incontext
+#SBATCH --job-name=wtb-oracle
 #SBATCH --partition=gpu-vram-94gb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -41,10 +41,6 @@ mkdir -p \
     "${HF_HUB_CACHE}" \
     "${HF_XET_CACHE}"
 
-#export NCCL_NET_PLUGIN=none
-#export NCCL_IB_DISABLE=1
-#export NCCL_P2P_LEVEL=NVL
-
 GPT_VENV="${WORK}/venvs/venv-gptoss"
 BENCH_VENV="${PROJECT_ROOT}/.venv"
 
@@ -83,7 +79,7 @@ update_env_variable "EXECUTING_LLM_BASE_URL" "http://${HOST}:8000/v1" "${ENV_FIL
 update_env_variable "EXECUTING_LLM_MODEL" "openai/gpt-oss-120b" "${ENV_FILE}"
 update_env_variable "EXECUTING_LLM_API_KEY" "EMPTY" "${ENV_FILE}"
 update_env_variable "EXECUTING_LLM_TOOL_CALL_PARSER" "auto" "${ENV_FILE}"
-update_env_variable "LANGGRAPH_TOOL_SELECTION_MODE" "in_context" "${ENV_FILE}"
+update_env_variable "LANGGRAPH_TOOL_SELECTION_MODE" "oracle" "${ENV_FILE}"
 
 echo "Updated ${ENV_FILE}"
 
@@ -96,7 +92,6 @@ cleanup() {
     echo "Cleaning up..."
 
     kill ${LANGGRAPH_PID:-} 2>/dev/null || true
-    kill ${EMBED_PID:-} 2>/dev/null || true
     kill ${GPT_PID:-} 2>/dev/null || true
 
     wait || true
@@ -126,8 +121,6 @@ vllm serve "${GPT_MODEL}" \
 
 GPT_PID=$!
 
-
-
 ####################################################
 # Wait for GPT server
 ####################################################
@@ -141,15 +134,12 @@ done
 
 echo "GPT-OSS ready."
 
-
-
 ####################################################
 # Switch into benchmark project
 ####################################################
 deactivate || true
 source "${BENCH_VENV}/bin/activate"
 cd "${PROJECT_ROOT}/wild-tool-bench"
-
 
 ####################################################
 # Start LangGraph
@@ -171,9 +161,7 @@ LANGGRAPH_PID=$!
 
 echo "Waiting for LangGraph..."
 
-
 sleep 15
-
 
 echo "LangGraph ready."
 
@@ -187,9 +175,11 @@ pip install overrides -q
 
 echo "Running benchmark..."
 
+echo "Tool selection mode: oracle (gold WTB tools only, no distractors)"
+
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result_120B_v2/in_context \
+    --result-dir result_120B_v2/oracle \
     --num-threads 1
 
 echo ""

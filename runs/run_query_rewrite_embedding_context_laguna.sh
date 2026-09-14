@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=wtb-query-rewrite-embedding-context
+#SBATCH --job-name=wtb-query-rewrite-embedding-context-laguna
 #SBATCH --partition=gpu-vram-94gb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:2
-#SBATCH --mem=110G
+#SBATCH --gres=gpu:3
+#SBATCH --mem=180G
 #SBATCH --time=12:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
@@ -77,23 +77,30 @@ export NCCL_IB_DISABLE=1
 export NCCL_P2P_LEVEL=NVL
 
 ####################################################
+# Laguna-specific configuration
+####################################################
+
+export VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER=0
+export VLLM_ENGINE_READY_TIMEOUT_S=1800
+
+####################################################
 # Virtual environments and models
 ####################################################
 
-GPT_VENV="${WORK}/venvs/venv-gptoss"
+LAGUNA_VENV="${WORK}/venvs/venv-laguna"
 BENCH_VENV="${PROJECT_ROOT}/.venv"
 
-GPT_MODEL="${WORK}/huggingface/hub/models--openai--gpt-oss-120b/snapshots/b5c939de8f754692c1647ca79fbf85e8c1e70f8a"
+LAGUNA_MODEL="${LAGUNA_MODEL:-poolside/Laguna-S-2.1-FP8}"
 
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}"
 REWRITE_MODEL="${REWRITE_MODEL:-Qwen/Qwen3-8B}"
 
-GPT_PORT="${GPT_PORT:-8000}"
+LAGUNA_PORT="${LAGUNA_PORT:-8000}"
 EMBEDDING_PORT="${EMBEDDING_PORT:-8002}"
 REWRITE_PORT="${REWRITE_PORT:-8004}"
 LANGGRAPH_PORT="${LANGGRAPH_PORT:-8001}"
 
-# GPU 1 runs two independent vLLM processes.
+# GPU 2 runs two independent vLLM processes.
 # Keep their memory reservations conservative.
 EMBEDDING_GPU_MEM_UTIL="${EMBEDDING_GPU_MEM_UTIL:-0.35}"
 REWRITE_GPU_MEM_UTIL="${REWRITE_GPU_MEM_UTIL:-0.45}"
@@ -104,7 +111,7 @@ echo "===================================================="
 echo "Job ID:             ${SLURM_JOB_ID:-unknown}"
 echo "Running on host:    ${HOST}"
 echo "Project root:       ${PROJECT_ROOT}"
-echo "Executor model:     ${GPT_MODEL}"
+echo "Executor model:     ${LAGUNA_MODEL}"
 echo "Embedding model:    ${EMBEDDING_MODEL}"
 echo "Query rewrite model:${REWRITE_MODEL}"
 echo "===================================================="
@@ -113,21 +120,15 @@ echo "===================================================="
 # Validate paths
 ####################################################
 
-if [[ ! -f "${GPT_VENV}/bin/activate" ]]; then
-    echo "ERROR: GPT virtual environment not found:"
-    echo "       ${GPT_VENV}"
+if [[ ! -f "${LAGUNA_VENV}/bin/activate" ]]; then
+    echo "ERROR: Laguna virtual environment not found:"
+    echo "       ${LAGUNA_VENV}"
     exit 1
 fi
 
 if [[ ! -f "${BENCH_VENV}/bin/activate" ]]; then
     echo "ERROR: Benchmark virtual environment not found:"
     echo "       ${BENCH_VENV}"
-    exit 1
-fi
-
-if [[ ! -d "${GPT_MODEL}" ]]; then
-    echo "ERROR: GPT model snapshot does not exist:"
-    echo "       ${GPT_MODEL}"
     exit 1
 fi
 
@@ -178,17 +179,22 @@ update_env_variable() {
 
 update_env_variable \
     "EXECUTING_LLM_BASE_URL" \
-    "http://${HOST}:${GPT_PORT}/v1" \
+    "http://${HOST}:${LAGUNA_PORT}/v1" \
     "${ENV_FILE}"
 
 update_env_variable \
     "EXECUTING_LLM_MODEL" \
-    "openai/gpt-oss-120b" \
+    "${LAGUNA_MODEL}" \
     "${ENV_FILE}"
 
 update_env_variable \
     "EXECUTING_LLM_API_KEY" \
     "EMPTY" \
+    "${ENV_FILE}"
+
+update_env_variable \
+    "EXECUTING_LLM_TOOL_CALL_PARSER" \
+    "poolside_v1" \
     "${ENV_FILE}"
 
 update_env_variable \
@@ -238,7 +244,7 @@ echo "Updated ${ENV_FILE}"
 # Background process variables
 ####################################################
 
-GPT_PID=""
+LAGUNA_PID=""
 EMBED_PID=""
 REWRITE_PID=""
 LANGGRAPH_PID=""
@@ -257,7 +263,7 @@ cleanup() {
     echo "Cleaning up..."
     echo "===================================================="
 
-    for pid_name in LANGGRAPH_PID REWRITE_PID EMBED_PID GPT_PID; do
+    for pid_name in LANGGRAPH_PID REWRITE_PID EMBED_PID LAGUNA_PID; do
         local pid="${!pid_name:-}"
 
         if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -268,7 +274,7 @@ cleanup() {
 
     sleep 3
 
-    for pid_name in LANGGRAPH_PID REWRITE_PID EMBED_PID GPT_PID; do
+    for pid_name in LANGGRAPH_PID REWRITE_PID EMBED_PID LAGUNA_PID; do
         local pid="${!pid_name:-}"
 
         if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -280,7 +286,7 @@ cleanup() {
     [[ -n "${LANGGRAPH_PID}" ]] && wait "${LANGGRAPH_PID}" 2>/dev/null || true
     [[ -n "${REWRITE_PID}" ]] && wait "${REWRITE_PID}" 2>/dev/null || true
     [[ -n "${EMBED_PID}" ]] && wait "${EMBED_PID}" 2>/dev/null || true
-    [[ -n "${GPT_PID}" ]] && wait "${GPT_PID}" 2>/dev/null || true
+    [[ -n "${LAGUNA_PID}" ]] && wait "${LAGUNA_PID}" 2>/dev/null || true
 
     echo "Cleanup complete."
 
@@ -291,7 +297,7 @@ on_error() {
     local exit_code=$?
 
     echo "" >&2
-    echo "[ERROR] Query-rewrite embedding startup script failed." >&2
+    echo "[ERROR] Query-rewrite embedding (Laguna) startup script failed." >&2
     echo "[ERROR] Exit code: ${exit_code}" >&2
     echo "[ERROR] Line: ${BASH_LINENO[0]:-${LINENO}}" >&2
     echo "[ERROR] Command: ${BASH_COMMAND}" >&2
@@ -457,58 +463,68 @@ echo ""
 echo "Both Qwen models are available locally."
 
 ####################################################
-# Start GPT-OSS on GPU 0
+# Start Laguna on GPUs 0 + 1
 ####################################################
 
 echo ""
 echo "===================================================="
-echo "Starting GPT-OSS on GPU 0"
+echo "Starting Laguna on GPUs 0 and 1"
 echo "===================================================="
 
-source "${GPT_VENV}/bin/activate"
+deactivate 2>/dev/null || true
+source "${LAGUNA_VENV}/bin/activate"
 
-CUDA_VISIBLE_DEVICES=0 \
+echo "Laguna environment:"
+echo "Python: $(command -v python)"
+python --version
+
+echo "vLLM:"
+python -c "import vllm; print(vllm.__version__)"
+
+CUDA_VISIBLE_DEVICES=0,1 \
 HF_HOME="${HF_HOME}" \
 HF_HUB_CACHE="${HF_HUB_CACHE}" \
 HF_XET_CACHE="${HF_XET_CACHE}" \
 HF_HUB_DISABLE_XET=1 \
-vllm serve "${GPT_MODEL}" \
-    --served-model-name openai/gpt-oss-120b \
-    --tensor-parallel-size 1 \
-    --dtype bfloat16 \
+vllm serve "${LAGUNA_MODEL}" \
+    --served-model-name "${LAGUNA_MODEL}" \
+    --tensor-parallel-size 2 \
+    --trust-remote-code \
+    --max-model-len 262144 \
     --gpu-memory-utilization 0.90 \
-    --enforce-eager \
+    --enable-auto-tool-choice \
+    --tool-call-parser poolside_v1 \
+    --reasoning-parser poolside_v1 \
     --host 0.0.0.0 \
-    --port "${GPT_PORT}" \
-    --tool-call-parser openai \
-    --enable-auto-tool-choice &
+    --port "${LAGUNA_PORT}" &
 
-GPT_PID=$!
+LAGUNA_PID=$!
 
-echo "GPT-OSS PID: ${GPT_PID}"
+echo "Laguna PID: ${LAGUNA_PID}"
 
 wait_for_service \
-    "GPT-OSS" \
-    "http://${HOST}:${GPT_PORT}/v1/models" \
-    "${GPT_PID}" \
+    "Laguna" \
+    "http://${HOST}:${LAGUNA_PORT}/v1/models" \
+    "${LAGUNA_PID}" \
     1800
 
 ####################################################
 # Reactivate benchmark environment
 ####################################################
 
+deactivate 2>/dev/null || true
 source "${BENCH_VENV}/bin/activate"
 
 ####################################################
-# Start embedding server on GPU 1
+# Start embedding server on GPU 2
 ####################################################
 
 echo ""
 echo "===================================================="
-echo "Starting embedding server on GPU 1"
+echo "Starting embedding server on GPU 2"
 echo "===================================================="
 
-CUDA_VISIBLE_DEVICES=1 \
+CUDA_VISIBLE_DEVICES=2 \
 HF_HOME="${HF_HOME}" \
 HF_HUB_CACHE="${HF_HUB_CACHE}" \
 HF_XET_CACHE="${HF_XET_CACHE}" \
@@ -529,7 +545,7 @@ wait_for_service \
     1800
 
 ####################################################
-# Start query rewrite server on GPU 1
+# Start query rewrite server on GPU 2
 #
 # IMPORTANT:
 # Qwen3-8B is a generative LLM.
@@ -538,10 +554,10 @@ wait_for_service \
 
 echo ""
 echo "===================================================="
-echo "Starting query rewrite server on GPU 1"
+echo "Starting query rewrite server on GPU 2"
 echo "===================================================="
 
-CUDA_VISIBLE_DEVICES=1 \
+CUDA_VISIBLE_DEVICES=2 \
 HF_HOME="${HF_HOME}" \
 HF_HUB_CACHE="${HF_HUB_CACHE}" \
 HF_XET_CACHE="${HF_XET_CACHE}" \
@@ -572,7 +588,7 @@ wait_for_service \
 ####################################################
 
 for service in \
-    "GPT-OSS:${GPT_PID}" \
+    "Laguna:${LAGUNA_PID}" \
     "embedding server:${EMBED_PID}" \
     "query rewrite server:${REWRITE_PID}"; do
 
@@ -636,6 +652,9 @@ cd "${BENCHMARK_ROOT}"
 
 source "${BENCH_VENV}/bin/activate"
 
+# Avoid a stale LangGraph instance from an earlier run.
+fuser -k "${LANGGRAPH_PORT}/tcp" 2>/dev/null || true
+
 python -u -m wtb.model_handler.api_inference.langgraph_app &
 
 LANGGRAPH_PID=$!
@@ -667,10 +686,10 @@ echo "LangGraph process is running."
 ####################################################
 
 curl -sf \
-    "http://${HOST}:${GPT_PORT}/v1/models" \
+    "http://${HOST}:${LAGUNA_PORT}/v1/models" \
     >/dev/null || {
 
-    echo "ERROR: GPT-OSS failed its final health check." >&2
+    echo "ERROR: Laguna failed its final health check." >&2
     exit 1
 }
 
@@ -698,12 +717,12 @@ echo "All service health checks passed."
 
 echo ""
 echo "===================================================="
-echo "Running benchmark"
+echo "Running Laguna query-rewrite embedding benchmark"
 echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result/query_rewrite_embedding_context \
+    --result-dir result_laguna/query_rewrite_embedding_context \
     --num-threads 1
 
 echo ""

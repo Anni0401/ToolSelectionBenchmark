@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=wtb-incontext
+#SBATCH --job-name=wtb-rewrite-pairs-gptoss
 #SBATCH --partition=gpu-vram-94gb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -9,6 +9,11 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
+
+# Starts a self-hosted gpt-oss-120b vLLM server on one H100 and runs
+# generate_rewrite_pairs_vllm.py against it (25 rewrite pairs/task by default).
+# Safe to resubmit: the script passes --resume, so a partially completed
+# output file is continued instead of restarted.
 
 set -euo pipefail
 
@@ -20,6 +25,7 @@ PROJECT_ROOT="$SLURM_SUBMIT_DIR"
 cd "$PROJECT_ROOT"
 
 echo "Project root: $PROJECT_ROOT"
+
 ####################################################
 # Environment
 ####################################################
@@ -27,8 +33,7 @@ echo "Project root: $PROJECT_ROOT"
 export TMPDIR="${WORK}/tmp_pip"
 export PIP_CACHE_DIR="${WORK}/tmp_pip/cache"
 
-mkdir -p "${TMPDIR}"
-mkdir -p "${PIP_CACHE_DIR}"
+mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}"
 
 # Hugging Face / model cache
 export HF_HOME="${WORK}/huggingface"
@@ -36,68 +41,53 @@ export HF_HUB_CACHE="${HF_HOME}/hub"
 export HF_XET_CACHE="${HF_HOME}/xet"
 
 mkdir -p \
-    "${TMPDIR}" \
-    "${PIP_CACHE_DIR}" \
     "${HF_HUB_CACHE}" \
     "${HF_XET_CACHE}"
-
-#export NCCL_NET_PLUGIN=none
-#export NCCL_IB_DISABLE=1
-#export NCCL_P2P_LEVEL=NVL
 
 GPT_VENV="${WORK}/venvs/venv-gptoss"
 BENCH_VENV="${PROJECT_ROOT}/.venv"
 
 GPT_MODEL="${WORK}/huggingface/hub/models--openai--gpt-oss-120b/snapshots/b5c939de8f754692c1647ca79fbf85e8c1e70f8a"
-
 HOST=$(hostname)
+
+# Pick an unused port if GPT_PORT is not explicitly set
+if [[ -z "${GPT_PORT:-}" ]]; then
+    GPT_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
+fi
 
 echo "===================================================="
 echo "Running on host: ${HOST}"
 echo "Project root:    ${PROJECT_ROOT}"
+echo "GPT model:       ${GPT_MODEL}"
+echo "GPT port:        ${GPT_PORT}"
 echo "===================================================="
 
-####################################################
-# Update .env
-####################################################
+if [[ ! -f "${GPT_VENV}/bin/activate" ]]; then
+    echo "ERROR: GPT virtual environment not found: ${GPT_VENV}"
+    exit 1
+fi
 
-ENV_FILE="${PROJECT_ROOT}/wild-tool-bench/.env"
+if [[ ! -f "${BENCH_VENV}/bin/activate" ]]; then
+    echo "ERROR: Benchmark virtual environment not found: ${BENCH_VENV}"
+    exit 1
+fi
 
-update_env_variable() {
-    local key="$1"
-    local value="$2"
-    local file="$3"
-
-    if grep -q "^${key}=" "${file}"; then
-        sed -i "s|^${key}=.*|${key}=${value}|" "${file}"
-    else
-        printf '%s=%s\n' "${key}" "${value}" >> "${file}"
-    fi
-}
-
-# Reset ALL executing-LLM variables explicitly. This overwrites any leftover
-# values from a previous Laguna run (e.g. EXECUTING_LLM_MODEL=poolside/...,
-# EXECUTING_LLM_TOOL_CALL_PARSER=poolside_v1) which would otherwise break
-# tool-call parsing for gpt-oss-120b.
-update_env_variable "EXECUTING_LLM_BASE_URL" "http://${HOST}:8000/v1" "${ENV_FILE}"
-update_env_variable "EXECUTING_LLM_MODEL" "openai/gpt-oss-120b" "${ENV_FILE}"
-update_env_variable "EXECUTING_LLM_API_KEY" "EMPTY" "${ENV_FILE}"
-update_env_variable "EXECUTING_LLM_TOOL_CALL_PARSER" "auto" "${ENV_FILE}"
-update_env_variable "LANGGRAPH_TOOL_SELECTION_MODE" "in_context" "${ENV_FILE}"
-
-echo "Updated ${ENV_FILE}"
+if [[ ! -d "${GPT_MODEL}" ]]; then
+    echo "ERROR: GPT model snapshot does not exist: ${GPT_MODEL}"
+    exit 1
+fi
 
 ####################################################
 # Cleanup
 ####################################################
 
+GPT_PID=""
+
 cleanup() {
     echo ""
     echo "Cleaning up..."
 
-    kill ${LANGGRAPH_PID:-} 2>/dev/null || true
-    kill ${EMBED_PID:-} 2>/dev/null || true
-    kill ${GPT_PID:-} 2>/dev/null || true
+    kill "${GPT_PID:-}" 2>/dev/null || true
 
     wait || true
 }
@@ -120,13 +110,13 @@ vllm serve "${GPT_MODEL}" \
     --gpu-memory-utilization 0.90 \
     --enforce-eager \
     --host 0.0.0.0 \
-    --port 8000 \
+    --port "${GPT_PORT}" \
     --tool-call-parser openai \
     --enable-auto-tool-choice &
 
 GPT_PID=$!
 
-
+echo "GPT-OSS PID: ${GPT_PID}"
 
 ####################################################
 # Wait for GPT server
@@ -134,63 +124,37 @@ GPT_PID=$!
 
 echo "Waiting for GPT-OSS..."
 
-until curl -sf "http://${HOST}:8000/v1/models" >/dev/null
+until curl -sf "http://${HOST}:${GPT_PORT}/v1/models" | grep -q "openai/gpt-oss-120b"
 do
+    if ! kill -0 "${GPT_PID}" 2>/dev/null; then
+        echo "ERROR: GPT-OSS exited during startup."
+        wait "${GPT_PID}" || true
+        exit 1
+    fi
     sleep 5
 done
 
 echo "GPT-OSS ready."
 
-
-
 ####################################################
 # Switch into benchmark project
 ####################################################
+
 deactivate || true
 source "${BENCH_VENV}/bin/activate"
-cd "${PROJECT_ROOT}/wild-tool-bench"
-
-
-####################################################
-# Start LangGraph
-####################################################
-
-echo "Cleaning stale LangGraph process..."
-
-fuser -k 8001/tcp 2>/dev/null || true
-
-echo "Starting LangGraph..."
-
-python -m wtb.model_handler.api_inference.langgraph_app &
-
-LANGGRAPH_PID=$!
+cd "${PROJECT_ROOT}/multi-agent-framework"
 
 ####################################################
-# Wait for LangGraph
+# Run rewrite pair generation (resumable)
 ####################################################
 
-echo "Waiting for LangGraph..."
+echo "Running rewrite pair generation..."
 
-
-sleep 15
-
-
-echo "LangGraph ready."
-
-####################################################
-# Run benchmark
-####################################################
-
-echo "Installing overrides..."
-
-pip install overrides -q
-
-echo "Running benchmark..."
-
-python -u -m wtb.openfunctions_evaluation \
-    --model=langgraph \
-    --result-dir result_120B_v2/in_context \
-    --num-threads 1
+python -u generate_rewrite_pairs_vllm.py \
+    --base-url "http://${HOST}:${GPT_PORT}/v1" \
+    --model openai/gpt-oss-120b \
+    --num-pairs "${NUM_PAIRS:-25}" \
+    --resume
 
 echo ""
-echo "Benchmark completed successfully."
+echo "Rewrite pair generation completed successfully."

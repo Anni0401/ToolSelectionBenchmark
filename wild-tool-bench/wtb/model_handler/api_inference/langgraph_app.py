@@ -2807,8 +2807,73 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         self.resolve_max_output_tokens = int(os.getenv("QUERY_RESOLVE_MAX_OUTPUT_TOKENS", "300"))
         self.rewrite_max_output_tokens = int(os.getenv("QUERY_REWRITE_MAX_OUTPUT_TOKENS", "300"))
         self.num_sampled_tools = int(os.getenv("QUERY_REWRITE_NUM_SAMPLED_TOOLS", "5"))
+        # Context-window gate: the resolve/rewrite LLM is typically served with a small
+        # --max-model-len (e.g. 2048), so long conversations can push prompt+completion
+        # over the limit. chars-per-token is a conservative estimate (no tokenizer call).
+        self.max_context_tokens = int(os.getenv("QUERY_REWRITE_LLM_MAX_CONTEXT_TOKENS", "2048"))
+        self.context_safety_margin_tokens = int(os.getenv("QUERY_REWRITE_CONTEXT_SAFETY_MARGIN_TOKENS", "64"))
+        self.chars_per_token_estimate = float(os.getenv("QUERY_REWRITE_CHARS_PER_TOKEN", "3.0"))
         self._rewrite_tools_pool = []
         self.last_rewrite_metrics = {}
+
+    def _char_budget(self, max_output_tokens: int) -> int:
+        """Char budget for one full prompt so prompt+completion stays within the LLM's context window."""
+        available_tokens = max(
+            128,
+            self.max_context_tokens - max_output_tokens - self.context_safety_margin_tokens,
+        )
+        return int(available_tokens * self.chars_per_token_estimate)
+
+    @staticmethod
+    def _truncate_tail(text: str, max_chars: int) -> str:
+        """Keep only the most recent (tail) part of text, dropping older content from the front."""
+        if max_chars <= 0:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        return text[-max_chars:]
+
+    def _fit_resolve_prompt(self, history_text: str, current_query: str) -> str:
+        """Build the resolve prompt, trimming history from the front (oldest first) to fit the budget."""
+        budget = self._char_budget(self.resolve_max_output_tokens)
+        static_len = len(self.RESOLVE_PROMPT_TEMPLATE.format(history_text="", current_query=""))
+        remaining = budget - static_len
+
+        current_query = self._truncate_tail(current_query, max(0, remaining))
+        remaining -= len(current_query)
+
+        trimmed_history = self._truncate_tail(history_text, max(0, remaining))
+        if trimmed_history != history_text:
+            print(
+                f"[QUERY RESOLVE] History truncated to fit context window: "
+                f"{len(history_text)} -> {len(trimmed_history)} chars"
+            )
+
+        return self.RESOLVE_PROMPT_TEMPLATE.format(
+            history_text=trimmed_history or "(no prior turns)",
+            current_query=current_query,
+        )
+
+    def _fit_rewrite_prompt(self, resolved_query: str) -> str:
+        """Build the rewrite prompt, trimming the resolved query from the front if it is still too long."""
+        sampled_tool_documents = self._sample_tool_documents()
+        budget = self._char_budget(self.rewrite_max_output_tokens)
+        static_len = len(self.REWRITE_PROMPT_TEMPLATE.format(
+            sampled_tool_documents=sampled_tool_documents, resolved_query=""
+        ))
+        remaining = budget - static_len
+
+        trimmed_query = self._truncate_tail(resolved_query, max(0, remaining))
+        if trimmed_query != resolved_query:
+            print(
+                f"[QUERY REWRITE] Resolved query truncated to fit context window: "
+                f"{len(resolved_query)} -> {len(trimmed_query)} chars"
+            )
+
+        return self.REWRITE_PROMPT_TEMPLATE.format(
+            sampled_tool_documents=sampled_tool_documents,
+            resolved_query=trimmed_query,
+        )
 
     def select(self, messages: list, tools: list) -> list:
         """Snapshot the synthetic-only tool pool for sampling, then run the usual pipeline."""
@@ -2915,10 +2980,7 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
 
     def _resolve_query(self, history_text: str, current_query: str) -> tuple[str, dict]:
         """Stage 1: resolve the current message into a self-contained task using the full history."""
-        prompt = self.RESOLVE_PROMPT_TEMPLATE.format(
-            history_text=history_text or "(no prior turns)",
-            current_query=current_query,
-        )
+        prompt = self._fit_resolve_prompt(history_text, current_query)
         resolved, metrics = self._call_llm(prompt, self.resolve_max_output_tokens)
 
         print(f"[QUERY RESOLVE] Current: {current_query[:200]}")
@@ -2934,10 +2996,7 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
 
     def _rewrite_query(self, resolved_query: str) -> tuple[str, dict]:
         """Stage 2: rewrite the resolved task into a retrieval-friendly query."""
-        prompt = self.REWRITE_PROMPT_TEMPLATE.format(
-            sampled_tool_documents=self._sample_tool_documents(),
-            resolved_query=resolved_query,
-        )
+        prompt = self._fit_rewrite_prompt(resolved_query)
         rewritten, metrics = self._call_llm(prompt, self.rewrite_max_output_tokens)
 
         print(f"[QUERY REWRITE] Resolved: {resolved_query[:200]}")

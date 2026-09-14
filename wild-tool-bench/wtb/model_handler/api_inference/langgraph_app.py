@@ -196,17 +196,24 @@ def log_tool_selection(strategy_name: str, query: str, available_tools_count: in
         print(f"[WARNING] Failed to log tool selection: {e}")
 
 
-def log_query_rewrite(original_query: str, rewritten_query: str, model: str, metrics: dict = None):
-    """Log a query rewrite so the before/after text can be inspected for analysis."""
+def log_query_rewrite(input_query: str, output_query: str, model: str, metrics: dict = None,
+                       stage: str = "rewrite"):
+    """Log a query-rewrite pipeline stage so the before/after text can be inspected for analysis.
+
+    ``input_query`` is exactly what the LLM saw for this stage (the raw last
+    message for "resolve", the resolved query for "rewrite") -- not
+    necessarily the user's original message.
+    """
     try:
         log_entry = {
             "timestamp": time.time(),
             "test_entry_id": getattr(_request_context, "test_entry_id", None),
             "task_idx": getattr(_request_context, "task_idx", None),
             "request_id": getattr(_request_context, "request_id", None),
+            "stage": stage,
             "model": model,
-            "original_query": original_query,
-            "rewritten_query": rewritten_query,
+            "input_query": input_query,
+            "output_query": output_query,
             **(metrics or {}),
         }
         _append_task_log(_get_query_rewrite_log_path(), log_entry)
@@ -2716,30 +2723,58 @@ class Qwen3EmbeddingContextBasedToolSelector(Qwen3EmbeddingBasedToolSelector):
 
 
 class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedToolSelector):
-    """Strategy: Query-rewriting LLM (Qwen3-8B) in front of Qwen3-Embedding-8B (full context).
+    """Strategy: two-stage Qwen3-8B query rewriting in front of Qwen3-Embedding-8B (full context).
 
-    A small LLM rewrites the user's request into a retrieval-friendlier form
-    (entities, operations, intermediate steps, identifiers, filters, whether a
-    tool must be called multiple times, ...) before it is embedded. The
-    rewriter is shown a handful of tool definitions randomly sampled from
-    exactly the same candidate pool the embedding retriever scores (task
-    tools + synthetic distractors), so it can mirror their terminology.
+    Stage 1 (resolve): Qwen3-8B reads the whole conversation history plus the
+    current (newest) message and resolves it into a self-contained task
+    description (pronouns, prior identifiers/results, implicit context, ...
+    are made explicit). This stage does not know about tools.
 
-    Only the text that gets embedded changes: the rewritten query replaces the
-    conversation text; ranking (embedding + cosine similarity) is otherwise
-    identical to ``Qwen3EmbeddingContextBasedToolSelector``.
+    Stage 2 (rewrite): Qwen3-8B takes only the resolved query from stage 1
+    (not the raw current message) and rewrites it into a retrieval-friendly
+    form (entities, operations, intermediate steps, identifiers, filters,
+    whether a tool must be called multiple times, ...). The rewriter is shown
+    a handful of tool definitions randomly sampled from exactly the same
+    candidate pool the embedding retriever scores (task tools + synthetic
+    distractors), so it can mirror their terminology.
 
-    The rewriter runs locally via vLLM; a failed or empty rewrite raises
+    Resolving and rewriting are separate calls/prompts (rather than one
+    combined step) so that a future strategy can swap in a finetuned
+    Qwen3-8B for the rewrite stage alone while reusing the same resolver.
+
+    Only the text that gets embedded changes: prior turns are kept verbatim
+    and only the newest message is replaced by the stage-2 rewrite; ranking
+    (embedding + cosine similarity) is otherwise identical to
+    ``Qwen3EmbeddingContextBasedToolSelector``.
+
+    Both LLM calls run locally via vLLM; a failed or empty response raises
     instead of silently falling back to the original query, so broken
     deployments are caught immediately rather than degrading silently.
 
     Environment Variables:
-        QUERY_REWRITE_LLM_ENDPOINT: Chat-completions URL of the rewriting LLM (required)
-        QUERY_REWRITE_LLM_API_KEY:  API key sent to the rewriting LLM (default: EMPTY)
+        QUERY_REWRITE_LLM_ENDPOINT: Chat-completions URL of the resolver/rewriter LLM (required)
+        QUERY_REWRITE_LLM_API_KEY:  API key sent to the resolver/rewriter LLM (default: EMPTY)
         QUERY_REWRITE_LLM_MODEL:    Model name (default: Qwen/Qwen3-8B)
-        QUERY_REWRITE_MAX_OUTPUT_TOKENS: Max tokens for the rewrite (default: 300)
+        QUERY_RESOLVE_MAX_OUTPUT_TOKENS: Max tokens for the resolve stage (default: 300)
+        QUERY_REWRITE_MAX_OUTPUT_TOKENS: Max tokens for the rewrite stage (default: 300)
         QUERY_REWRITE_NUM_SAMPLED_TOOLS: Number of example tools shown to the rewriter (default: 5)
     """
+
+    RESOLVE_PROMPT_TEMPLATE = (
+        "You resolve conversational context into a single self-contained task description.\n\n"
+        "Your task is NOT to answer the user and NOT to call any tools.\n\n"
+        "Given the conversation history and the current request below, rewrite the current\n"
+        "request as a standalone task description. Resolve pronouns, references to earlier\n"
+        "results, identifiers or entities mentioned before, and any other implicit context, so\n"
+        "that someone with no access to the conversation history could still understand exactly\n"
+        "what needs to be done. Preserve all important argument values from the current request.\n\n"
+        "Conversation history:\n"
+        "{history_text}\n\n"
+        "Current request:\n"
+        "{current_query}\n\n"
+        "Return only the resolved, self-contained task description. Do not include explanations,\n"
+        "JSON, tool calls, or an answer."
+    )
 
     REWRITE_PROMPT_TEMPLATE = (
         "You rewrite user requests to improve retrieval of relevant tools.\n\n"
@@ -2757,7 +2792,7 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         "Example tool definitions:\n"
         "{sampled_tool_documents}\n\n"
         "Original user request:\n"
-        "{user_query}\n\n"
+        "{resolved_query}\n\n"
         "Return only one rewritten retrieval query. Do not include explanations,\n"
         "JSON, tool calls, or an answer."
     )
@@ -2769,20 +2804,32 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         self.rewrite_endpoint = os.getenv("QUERY_REWRITE_LLM_ENDPOINT")
         self.rewrite_api_key = os.getenv("QUERY_REWRITE_LLM_API_KEY", "EMPTY")
         self.rewrite_model = os.getenv("QUERY_REWRITE_LLM_MODEL", "Qwen/Qwen3-8B")
+        self.resolve_max_output_tokens = int(os.getenv("QUERY_RESOLVE_MAX_OUTPUT_TOKENS", "300"))
         self.rewrite_max_output_tokens = int(os.getenv("QUERY_REWRITE_MAX_OUTPUT_TOKENS", "300"))
         self.num_sampled_tools = int(os.getenv("QUERY_REWRITE_NUM_SAMPLED_TOOLS", "5"))
         self._rewrite_tools_pool = []
         self.last_rewrite_metrics = {}
 
     def select(self, messages: list, tools: list) -> list:
-        """Snapshot the candidate tool pool for sampling, then run the usual pipeline."""
-        self._rewrite_tools_pool = self._build_all_tools(tools)
+        """Snapshot the synthetic-only tool pool for sampling, then run the usual pipeline."""
+        task_tool_names = {
+            self._sanitize_tool(t)["function"]["name"]
+            for t in (tools or [])
+            if self._sanitize_tool(t) is not None
+        }
+        # Sample only from synthetic distractors so the rewriter never sees the task's gold tool(s).
+        self._rewrite_tools_pool = [
+            t for t in self.synthetic_tools_cache
+            if t["function"]["name"] not in task_tool_names
+        ]
         selected = super().select(messages, tools)
         self.last_selection_metrics = {
             **self.last_selection_metrics,
             **self.last_rewrite_metrics,
             "rewrite_total_tokens": (
-                self.last_rewrite_metrics.get("rewrite_input_tokens", 0)
+                self.last_rewrite_metrics.get("resolve_input_tokens", 0)
+                + self.last_rewrite_metrics.get("resolve_output_tokens", 0)
+                + self.last_rewrite_metrics.get("rewrite_input_tokens", 0)
                 + self.last_rewrite_metrics.get("rewrite_output_tokens", 0)
             ),
         }
@@ -2805,25 +2852,20 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         sampled = random.sample(pool, k)
         return "\n".join(self._format_sampled_tool(t) for t in sampled)
 
-    def _rewrite_query(self, user_query: str) -> str:
-        """Call the query-rewriting LLM. Raises on any failure instead of falling back."""
+    def _call_llm(self, prompt: str, max_output_tokens: int) -> tuple[str, dict]:
+        """Call the resolver/rewriter LLM. Raises on any failure instead of falling back."""
         if not self.rewrite_endpoint:
             raise ValueError(
                 "QUERY_REWRITE_LLM_ENDPOINT must be set for "
                 "qwen3_query_rewrite_embedding_context mode"
             )
 
-        prompt = self.REWRITE_PROMPT_TEMPLATE.format(
-            sampled_tool_documents=self._sample_tool_documents(),
-            user_query=user_query,
-        )
-
         payload = {
             "model": self.rewrite_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
             "top_p": 1.0,
-            "max_tokens": self.rewrite_max_output_tokens,
+            "max_tokens": max_output_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -2864,32 +2906,76 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
                 f"Query-rewrite LLM returned an empty response: {str(data)[:200]}"
             )
 
-        self.last_rewrite_metrics = {
-            "rewrite_input_tokens": int(usage.get("prompt_tokens", 0) or 0),
-            "rewrite_output_tokens": int(usage.get("completion_tokens", 0) or 0),
-            "rewrite_latency_s": time.perf_counter() - started,
+        metrics = {
+            "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "output_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "latency_s": time.perf_counter() - started,
         }
+        return content, metrics
 
-        print(f"[QUERY REWRITE] Original: {user_query[:200]}")
-        print(f"[QUERY REWRITE] Rewritten: {content[:200]}")
-        log_query_rewrite(user_query, content, self.rewrite_model, self.last_rewrite_metrics)
+    def _resolve_query(self, history_text: str, current_query: str) -> tuple[str, dict]:
+        """Stage 1: resolve the current message into a self-contained task using the full history."""
+        prompt = self.RESOLVE_PROMPT_TEMPLATE.format(
+            history_text=history_text or "(no prior turns)",
+            current_query=current_query,
+        )
+        resolved, metrics = self._call_llm(prompt, self.resolve_max_output_tokens)
 
-        return content
+        print(f"[QUERY RESOLVE] Current: {current_query[:200]}")
+        print(f"[QUERY RESOLVE] Resolved: {resolved[:200]}")
+        stage_metrics = {
+            "resolve_input_tokens": metrics["input_tokens"],
+            "resolve_output_tokens": metrics["output_tokens"],
+            "resolve_latency_s": metrics["latency_s"],
+        }
+        log_query_rewrite(current_query, resolved, self.rewrite_model, stage_metrics, stage="resolve")
+
+        return resolved, stage_metrics
+
+    def _rewrite_query(self, resolved_query: str) -> tuple[str, dict]:
+        """Stage 2: rewrite the resolved task into a retrieval-friendly query."""
+        prompt = self.REWRITE_PROMPT_TEMPLATE.format(
+            sampled_tool_documents=self._sample_tool_documents(),
+            resolved_query=resolved_query,
+        )
+        rewritten, metrics = self._call_llm(prompt, self.rewrite_max_output_tokens)
+
+        print(f"[QUERY REWRITE] Resolved: {resolved_query[:200]}")
+        print(f"[QUERY REWRITE] Rewritten: {rewritten[:200]}")
+        stage_metrics = {
+            "rewrite_input_tokens": metrics["input_tokens"],
+            "rewrite_output_tokens": metrics["output_tokens"],
+            "rewrite_latency_s": metrics["latency_s"],
+        }
+        log_query_rewrite(resolved_query, rewritten, self.rewrite_model, stage_metrics, stage="rewrite")
+
+        return rewritten, stage_metrics
 
     def _extract_query(self, messages: list) -> str:
-        """Rewrite the full conversation context, then apply the Qwen3 instruction prefix."""
+        """Keep prior turns verbatim; resolve+rewrite only the newest (last) message."""
         conversation_parts = []
         for msg in messages:
             role = msg.get("role", "").upper()
             content = msg.get("content", "")
             if isinstance(content, str) and content.strip():
-                conversation_parts.append(f"[{role}]: {content}")
-        full_conversation = "\n".join(conversation_parts)[:2000]
-        if not full_conversation:
+                conversation_parts.append((role, content))
+        if not conversation_parts:
             return ""
 
-        rewritten = self._rewrite_query(full_conversation)
-        return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {rewritten}"
+        *history, (last_role, last_content) = conversation_parts
+        history_text = "\n".join(f"[{role}]: {content}" for role, content in history)
+        last_content = last_content[:2000]
+
+        resolved_query, resolve_metrics = self._resolve_query(history_text, last_content)
+        rewritten_last, rewrite_metrics = self._rewrite_query(resolved_query)
+        self.last_rewrite_metrics = {**resolve_metrics, **rewrite_metrics}
+
+        full_conversation = (
+            f"{history_text}\n[{last_role}]: {rewritten_last}" if history_text
+            else f"[{last_role}]: {rewritten_last}"
+        )
+        full_conversation = full_conversation[-2000:]
+        return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {full_conversation}"
 
 
 class Qwen3EmbeddingWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRerankerToolSelector):

@@ -48,8 +48,12 @@ source "${VENV_PATH}/bin/activate"
 echo "Python:  $(which python)"
 echo "Version: $(python --version)"
 
-# Install/upgrade required training deps in current venv.
-pip install --upgrade "transformers>=4.44" "datasets>=2.21" "accelerate>=0.34" "trl>=0.10" "peft>=0.12"
+if ! python -c "import accelerate, datasets, peft, torch, transformers, trl"; then
+    echo "ERROR: training dependencies are missing from ${VENV_PATH}."
+    echo "Install them before submitting the job, for example:"
+    echo "  uv pip install --python ${VENV_PATH}/bin/python -r requirements.txt"
+    exit 1
+fi
 
 export NCCL_NET_PLUGIN=none
 export NCCL_IB_DISABLE=1
@@ -61,13 +65,14 @@ mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}"
 
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-8B}"
 INPUT_JSON="${INPUT_JSON:-${PROJECT_ROOT}/multi-agent-framework/queries_gold_tools_batch1_dpo_ranked.json}"
-OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/multi-agent-framework/qwen3-8b-dpo-lora}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/multi-agent-framework/qwen3-8b-dpo-lora-experiment-b}"
 BETA="${BETA:-0.1}"
 EPOCHS="${EPOCHS:-3}"
 LR="${LR:-5e-6}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-2}"
 VAL_RATIO="${VAL_RATIO:-0.2}"
+MIN_SCORE_MARGIN="${MIN_SCORE_MARGIN:-3.0}"
 SEED="${SEED:-42}"
 
 if [[ ! -f "${INPUT_JSON}" ]]; then
@@ -98,6 +103,7 @@ python -u "${PROJECT_ROOT}/multi-agent-framework/train_dpo_qwen3_lora.py" \
     --max-length 1024 \
     --max-prompt-length 768 \
     --val-ratio "${VAL_RATIO}" \
+    --min-score-margin "${MIN_SCORE_MARGIN}" \
     --group-by gold_tools \
     --seed "${SEED}" \
     --lora-r 16 \

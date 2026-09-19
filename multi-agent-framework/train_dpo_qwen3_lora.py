@@ -103,6 +103,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-length", type=int, default=1024, help="Max sequence length")
     parser.add_argument("--max-prompt-length", type=int, default=768, help="Max prompt length")
 
+    parser.add_argument(
+        "--min-score-margin",
+        type=float,
+        default=0.0,
+        help="Minimum |score_chosen - score_rejected| required to keep a pair (applied before train/val split)",
+    )
     parser.add_argument("--val-ratio", type=float, default=0.2, help="Validation ratio (0 disables split)")
     parser.add_argument(
         "--group-by",
@@ -203,13 +209,16 @@ def _group_key(row: dict[str, Any], prompt: str, mode: str) -> str:
     return "gold::" + "|".join(cleaned)
 
 
-def normalize_and_filter(rows: list[dict[str, Any]], group_mode: str) -> tuple[list[PairRecord], dict[str, int]]:
+def normalize_and_filter(
+    rows: list[dict[str, Any]], group_mode: str, min_score_margin: float = 0.0
+) -> tuple[list[PairRecord], dict[str, int]]:
     stats = {
         "total": len(rows),
         "kept": 0,
         "skip_missing_field": 0,
         "skip_identical": 0,
         "skip_tie": 0,
+        "skip_small_margin": 0,
     }
 
     cleaned: list[PairRecord] = []
@@ -237,6 +246,11 @@ def normalize_and_filter(rows: list[dict[str, Any]], group_mode: str) -> tuple[l
         if score_chosen is not None and score_rejected is not None and math.isclose(score_chosen, score_rejected, rel_tol=1e-9, abs_tol=1e-9):
             stats["skip_tie"] += 1
             continue
+
+        if min_score_margin > 0.0:
+            if score_chosen is None or score_rejected is None or abs(score_chosen - score_rejected) <= min_score_margin:
+                stats["skip_small_margin"] += 1
+                continue
 
         cleaned.append(
             PairRecord(
@@ -356,7 +370,7 @@ def main() -> int:
     if not isinstance(rows, list):
         raise ValueError("Input must be a JSON list.")
 
-    normalized, stats = normalize_and_filter(rows, args.group_by)
+    normalized, stats = normalize_and_filter(rows, args.group_by, args.min_score_margin)
     if len(normalized) < 2:
         raise ValueError(f"Need at least 2 valid DPO pairs, found {len(normalized)}")
 
@@ -375,6 +389,7 @@ def main() -> int:
     print(f"Skipped missing fields: {stats['skip_missing_field']}")
     print(f"Skipped identical:      {stats['skip_identical']}")
     print(f"Skipped ties:           {stats['skip_tie']}")
+    print(f"Skipped small margin:   {stats['skip_small_margin']}")
     print(f"Train pairs:            {len(train_rows)}")
     print(f"Validation pairs:       {len(val_rows)}")
     print("==================================================")

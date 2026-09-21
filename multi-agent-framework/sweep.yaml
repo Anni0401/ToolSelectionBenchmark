@@ -1,0 +1,33 @@
+# W&B hyperparameter sweep for DPO LoRA training of Qwen3-8B (query rewriting).
+#
+# Usage (run from the `multi-agent-framework` directory so `program:` resolves):
+#   wandb sweep sweep.yaml
+# This prints a sweep ID (ENTITY/PROJECT/SWEEP_ID). Then launch one or more agents
+# that pull runs from the queue, e.g.:
+#   wandb agent <SWEEP_ID>
+# or via SLURM (one GPU per agent, submit multiple times for parallel agents):
+#   sbatch ../deploy/slurm_dpo_sweep_agent.sh <SWEEP_ID>
+#
+# Full grid is 4 (lr) * 3 (beta) * 3 (epochs) = 36 combinations; Bayesian search
+# is used to focus the budget on promising regions instead of exhausting the grid.
+#
+# Trains on the FULL DPO dataset (score-margin filtering from the Experiment B
+# trial was scrapped - run.sh defaults MIN_SCORE_MARGIN back to 0.0).
+
+program: run.sh
+method: bayes
+metric:
+  name: eval_rewards/accuracies
+  goal: maximize
+parameters:
+  learning-rate:
+    values: [1e-6, 2e-6, 5e-6, 1e-5]
+  beta:
+    values: [0.05, 0.1, 0.2]
+  epochs:
+    values: [1, 2, 3]
+command:
+  - ${env}
+  - bash
+  - ${program}
+  - ${args}

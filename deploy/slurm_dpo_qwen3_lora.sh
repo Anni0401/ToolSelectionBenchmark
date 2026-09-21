@@ -65,14 +65,14 @@ mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}"
 
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-8B}"
 INPUT_JSON="${INPUT_JSON:-${PROJECT_ROOT}/multi-agent-framework/queries_gold_tools_batch1_dpo_ranked.json}"
-OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/multi-agent-framework/qwen3-8b-dpo-lora-experiment-b}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/multi-agent-framework/qwen3-8b-dpo-lora}"
 BETA="${BETA:-0.1}"
 EPOCHS="${EPOCHS:-3}"
 LR="${LR:-5e-6}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-2}"
 VAL_RATIO="${VAL_RATIO:-0.2}"
-MIN_SCORE_MARGIN="${MIN_SCORE_MARGIN:-3.0}"
+MIN_SCORE_MARGIN="${MIN_SCORE_MARGIN:-0.0}"
 SEED="${SEED:-42}"
 
 if [[ ! -f "${INPUT_JSON}" ]]; then

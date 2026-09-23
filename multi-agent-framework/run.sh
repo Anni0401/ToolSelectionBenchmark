@@ -24,9 +24,10 @@ SEED="${SEED:-42}"
 LORA_R="${LORA_R:-16}"
 LORA_ALPHA="${LORA_ALPHA:-32}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
-WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-DPO_Qwen3_Sweep}"
 
-export WANDB_PROJECT="${WANDB_PROJECT_NAME}"
+
+export WANDB_ENTITY=herrmann-ann-kathrin-universit-t-mannheim
+export WANDB_PROJECT=ToolSelectionBenchmark-multi-agent-framework
 
 # Unique per-run output dir so parallel sweep agents never collide.
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/sweeps/run_$(date +%Y%m%d_%H%M%S)_$(hostname)_$$}"

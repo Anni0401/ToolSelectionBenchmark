@@ -3,6 +3,7 @@ import json
 import copy
 import time
 import random
+import re
 import threading
 import urllib.request
 import urllib.error
@@ -2917,7 +2918,16 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         sampled = random.sample(pool, k)
         return "\n".join(self._format_sampled_tool(t) for t in sampled)
 
-    def _call_llm(self, prompt: str, max_output_tokens: int) -> tuple[str, dict]:
+    # Matches vLLM's "maximum context length" 400 body so overflow can be recovered from
+    # instead of failing the whole request -- our char-based budget is only an estimate
+    # and can still under-trim for token-dense text (JSON, non-English, etc).
+    _CONTEXT_OVERFLOW_RE = re.compile(
+        r"maximum context length is (\d+) tokens.*?requested (\d+) output tokens.*?"
+        r"contains at least (\d+) input tokens",
+        re.DOTALL,
+    )
+
+    def _call_llm(self, prompt: str, max_output_tokens: int, _attempt: int = 0) -> tuple[str, dict]:
         """Call the resolver/rewriter LLM. Raises on any failure instead of falling back."""
         if not self.rewrite_endpoint:
             raise ValueError(
@@ -2948,6 +2958,20 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_data = exc.read().decode("utf-8")
+            overflow = self._CONTEXT_OVERFLOW_RE.search(error_data)
+            if overflow and _attempt < 3:
+                max_ctx, out_tok, in_tok = (int(g) for g in overflow.groups())
+                overage_tokens = (in_tok + out_tok) - max_ctx
+                # Trim more than the reported overage since the char/token ratio is an estimate too.
+                trim_chars = int((overage_tokens + self.context_safety_margin_tokens)
+                                  * self.chars_per_token_estimate * 2)
+                trimmed_prompt = self._truncate_tail(prompt, max(0, len(prompt) - trim_chars))
+                print(
+                    f"[QUERY REWRITE] Prompt exceeded context window "
+                    f"(in={in_tok} out={out_tok} max={max_ctx}); retrying with "
+                    f"{len(prompt)} -> {len(trimmed_prompt)} chars"
+                )
+                return self._call_llm(trimmed_prompt, max_output_tokens, _attempt=_attempt + 1)
             raise RuntimeError(
                 f"Query-rewrite LLM request failed: {exc.code} {exc.reason} - {error_data[:200]}"
             ) from exc

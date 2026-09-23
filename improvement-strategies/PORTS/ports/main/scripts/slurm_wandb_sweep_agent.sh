@@ -30,6 +30,18 @@ fi
 SWEEP_ID="$1"
 RUN_COUNT="${2:-}"  # optional: max number of runs this agent should execute
 
+if [[ "${SWEEP_ID}" == "wandb" && "${RUN_COUNT}" == "agent" ]]; then
+    echo "ERROR: pass the sweep ID directly; do not include 'wandb agent'."
+    echo "Usage: sbatch $0 <ENTITY/PROJECT/SWEEP_ID> [RUN_COUNT]"
+    exit 2
+fi
+
+if [[ -n "${RUN_COUNT}" && ! "${RUN_COUNT}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: RUN_COUNT must be a non-negative integer, got '${RUN_COUNT}'."
+    echo "Usage: sbatch $0 <ENTITY/PROJECT/SWEEP_ID> [RUN_COUNT]"
+    exit 2
+fi
+
 ####################################################
 # Project paths
 ####################################################

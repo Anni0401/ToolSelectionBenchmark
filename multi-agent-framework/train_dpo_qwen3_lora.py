@@ -95,8 +95,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-name", type=str, default=DEFAULT_MODEL, help="Base policy model")
 
     parser.add_argument("--epochs", type=float, default=3.0, help="Number of training epochs")
-    parser.add_argument("--learning-rate", type=float, default=5e-6, help="DPO learning rate")
-    parser.add_argument("--beta", type=float, default=0.1, help="DPO beta")
+    parser.add_argument("--learning-rate", type=float, default=1e-5, help="DPO learning rate")
+    parser.add_argument("--beta", type=float, default=0.2, help="DPO beta")
     parser.add_argument("--global-batch-size", type=int, default=32, help="Target global batch size")
     parser.add_argument("--per-device-train-batch-size", type=int, default=2, help="Per-device train batch size")
     parser.add_argument("--per-device-eval-batch-size", type=int, default=2, help="Per-device eval batch size")

@@ -3061,6 +3061,166 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {full_conversation}"
 
 
+class Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(Qwen3QueryRewriteEmbeddingContextToolSelector):
+    """Strategy: same two-stage pipeline as Qwen3QueryRewriteEmbeddingContextToolSelector, but
+    the stage-2 rewrite is produced by the DPO-finetuned LoRA adapter trained in
+    multi-agent-framework/train_dpo_qwen3_lora.py instead of the base Qwen3-8B model.
+
+    Adapter storage (multi-agent-framework/qwen3-8b-dpo-lora-final/final/): only LoRA
+    weights are saved there (adapter_config.json + adapter_model.safetensors, ~few hundred
+    MB), not a full checkpoint. adapter_config.json pins
+    ``base_model_name_or_path: "Qwen/Qwen3-8B"``, so this is not a standalone model -- it
+    must be loaded on top of the base Qwen3-8B weights. To serve it, start (or point to) a
+    vLLM OpenAI-compatible server for the base model with multi-LoRA enabled, e.g.:
+
+        python -m vllm.entrypoints.openai.api_server \\
+            --model Qwen/Qwen3-8B \\
+            --enable-lora --max-lora-rank 16 \\
+            --lora-modules qwen3-8b-dpo-lora=/path/to/qwen3-8b-dpo-lora-final/final \\
+            --port 8004
+
+    and then request completions with ``"model": "qwen3-8b-dpo-lora"`` (the name given in
+    ``--lora-modules``); this can be the same vLLM engine already used for the base
+    resolver/rewriter (multi-LoRA on one engine) or a separate one on its own port/GPU.
+
+    Stage 1 (resolve) is unchanged and still goes through the base resolver LLM
+    (QUERY_REWRITE_LLM_ENDPOINT / QUERY_REWRITE_LLM_MODEL). Stage 2 (rewrite) is sent to the
+    DPO LoRA endpoint/model below, using the exact prompt the adapter was trained on (see
+    REWRITE_PROMPT_TEMPLATE in train_dpo_qwen3_lora.py), which is a near-identical but not
+    byte-identical subset of the base REWRITE_PROMPT_TEMPLATE (missing the "these are only
+    examples" caveat sentence) -- keeping this in sync with training avoids a prompt/train
+    mismatch that would silently degrade the finetuned adapter's outputs.
+
+    Environment Variables (on top of the base QUERY_REWRITE_* ones):
+        QUERY_REWRITE_DPO_LLM_ENDPOINT: Chat-completions URL serving the LoRA adapter
+                                         (default: same as QUERY_REWRITE_LLM_ENDPOINT)
+        QUERY_REWRITE_DPO_LLM_API_KEY:  API key for that endpoint
+                                         (default: same as QUERY_REWRITE_LLM_API_KEY)
+        QUERY_REWRITE_DPO_LLM_MODEL:    Served model name for the adapter, i.e. the name
+                                         given via "--lora-modules <name>=<path>"
+                                         (default: "qwen3-8b-dpo-lora")
+    """
+
+    REWRITE_PROMPT_TEMPLATE = (
+        "You rewrite user requests to improve retrieval of relevant tools.\n\n"
+        "Your task is NOT to answer the user and NOT to call any tools.\n\n"
+        "Rewrite the user request so that it clearly expresses:\n"
+        "- the entities involved;\n"
+        "- the intended operations;\n"
+        "- intermediate steps;\n"
+        "- identifiers that may need to be obtained;\n"
+        "- required filters, limits, dates, or arguments;\n"
+        "- whether the same tool must be called multiple times.\n\n"
+        "Use the terminology and operation style suggested by the example tool\n"
+        "definitions below. Do not invent tools or APIs. Preserve the user's\n"
+        "intent and all important argument values.\n\n"
+        "Example tool definitions:\n"
+        "{sampled_tool_documents}\n\n"
+        "Original user request:\n"
+        "{resolved_query}\n\n"
+        "Return only one rewritten retrieval query. Do not include explanations,\n"
+        "JSON, tool calls, or an answer."
+    )
+
+    def __init__(self, top_k: int = 5, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        super().__init__(top_k=top_k, cache_file=cache_file, tools_file=tools_file,
+                          schema_cache_file=schema_cache_file)
+        self.dpo_rewrite_endpoint = os.getenv("QUERY_REWRITE_DPO_LLM_ENDPOINT", self.rewrite_endpoint)
+        self.dpo_rewrite_api_key = os.getenv("QUERY_REWRITE_DPO_LLM_API_KEY", self.rewrite_api_key)
+        self.dpo_rewrite_model = os.getenv("QUERY_REWRITE_DPO_LLM_MODEL", "qwen3-8b-dpo-lora")
+
+    def _call_dpo_llm(self, prompt: str, max_output_tokens: int, _attempt: int = 0) -> tuple[str, dict]:
+        """Call the DPO LoRA rewrite endpoint. Mirrors _call_llm but targets the finetuned adapter."""
+        if not self.dpo_rewrite_endpoint:
+            raise ValueError(
+                "QUERY_REWRITE_DPO_LLM_ENDPOINT (or QUERY_REWRITE_LLM_ENDPOINT) must be set "
+                "for qwen3_query_rewrite_dpo_lora_embedding_context mode"
+            )
+
+        payload = {
+            "model": self.dpo_rewrite_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": max_output_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "LangGraph-QueryRewriter-DpoLora/1.0",
+        }
+        if self.dpo_rewrite_api_key:
+            headers["Authorization"] = f"Bearer {self.dpo_rewrite_api_key}"
+
+        req = urllib.request.Request(self.dpo_rewrite_endpoint, data=body, headers=headers, method="POST")
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_data = exc.read().decode("utf-8")
+            overflow = self._CONTEXT_OVERFLOW_RE.search(error_data)
+            if overflow and _attempt < 3:
+                max_ctx, out_tok, in_tok = (int(g) for g in overflow.groups())
+                overage_tokens = (in_tok + out_tok) - max_ctx
+                # Trim more than the reported overage since the char/token ratio is an estimate too.
+                trim_chars = int((overage_tokens + self.context_safety_margin_tokens)
+                                  * self.chars_per_token_estimate * 2)
+                trimmed_prompt = self._truncate_tail(prompt, max(0, len(prompt) - trim_chars))
+                print(
+                    f"[QUERY REWRITE DPO] Prompt exceeded context window "
+                    f"(in={in_tok} out={out_tok} max={max_ctx}); retrying with "
+                    f"{len(prompt)} -> {len(trimmed_prompt)} chars"
+                )
+                return self._call_dpo_llm(trimmed_prompt, max_output_tokens, _attempt=_attempt + 1)
+            raise RuntimeError(
+                f"DPO LoRA query-rewrite LLM request failed: {exc.code} {exc.reason} - {error_data[:200]}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"DPO LoRA query-rewrite LLM request failed (connection): {exc.reason}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"DPO LoRA query-rewrite LLM request failed: {exc}") from exc
+
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        content = ""
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if choices:
+            msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+            content = (msg.get("content") or "").strip()
+
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+        if not content:
+            raise RuntimeError(
+                f"DPO LoRA query-rewrite LLM returned an empty response: {str(data)[:200]}"
+            )
+
+        metrics = {
+            "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "output_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "latency_s": time.perf_counter() - started,
+        }
+        return content, metrics
+
+    def _rewrite_query(self, resolved_query: str) -> tuple[str, dict]:
+        """Stage 2: rewrite via the DPO-finetuned LoRA adapter instead of the base model."""
+        prompt = self._fit_rewrite_prompt(resolved_query)
+        rewritten, metrics = self._call_dpo_llm(prompt, self.rewrite_max_output_tokens)
+
+        print(f"[QUERY REWRITE DPO] Resolved: {resolved_query[:200]}")
+        print(f"[QUERY REWRITE DPO] Rewritten: {rewritten[:200]}")
+        stage_metrics = {
+            "rewrite_input_tokens": metrics["input_tokens"],
+            "rewrite_output_tokens": metrics["output_tokens"],
+            "rewrite_latency_s": metrics["latency_s"],
+        }
+        log_query_rewrite(resolved_query, rewritten, self.dpo_rewrite_model, stage_metrics, stage="rewrite")
+
+        return rewritten, stage_metrics
+
+
 class Qwen3EmbeddingWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRerankerToolSelector):
     """Strategy 10: Qwen3-Embedding-8B retrieval + LLM reranking.
 
@@ -4017,6 +4177,8 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return Qwen3EmbeddingContextBasedToolSelector(top_k=5)
     elif mode == "qwen3_query_rewrite_embedding_context":
         return Qwen3QueryRewriteEmbeddingContextToolSelector(top_k=5)
+    elif mode == "qwen3_query_rewrite_dpo_lora_embedding_context":
+        return Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(top_k=5)
     elif mode == "qwen3_embedding_reranker":
         return Qwen3EmbeddingWithLLMRerankerToolSelector(top_k=5, initial_k=10)
     elif mode == "qwen3_embedding_context_reranker":
@@ -4222,6 +4384,8 @@ def run(host="127.0.0.1", port=8001):
     print(f"  2.1. 'toolreagt' - ReAct selector using tool_retreiver iterations")
     print(f"  3. 'embedding' - OpenAI text-embedding-3-small (cached)")
     print(f"  4. 'embedding_reranker' - Embeddings + LLM reranking")
+    print(f"  5. 'qwen3_query_rewrite_embedding_context' - Qwen3-8B resolve+rewrite + Qwen3-Embedding-8B")
+    print(f"  5.1. 'qwen3_query_rewrite_dpo_lora_embedding_context' - same, rewrite stage via DPO LoRA adapter")
     print(f"\nOpenAI Embedding Configuration (for mode 'embedding'):")
     print(f"  OPENAI_API_KEY: {'***SET***' if os.getenv('OPENAI_API_KEY') else 'NOT SET'}")
     print(f"  OPENAI_BASE_URL: {os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}")

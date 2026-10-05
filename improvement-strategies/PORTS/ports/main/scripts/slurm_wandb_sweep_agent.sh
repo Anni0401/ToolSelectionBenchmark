@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=94G
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
 
@@ -28,7 +28,7 @@ if [ $# -lt 1 ]; then
     exit 1
 fi
 SWEEP_ID="$1"
-RUN_COUNT="${2:-}"  # optional: max number of runs this agent should execute
+RUN_COUNT="${2:-30}"  # max number of runs this agent should execute (default: 30)
 
 if [[ "${SWEEP_ID}" == "wandb" && "${RUN_COUNT}" == "agent" ]]; then
     echo "ERROR: pass the sweep ID directly; do not include 'wandb agent'."
@@ -72,6 +72,15 @@ echo "===================================================="
 
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-py312}"
 
+# A venv inherited from the submitting shell (e.g. VS Code auto-activating
+# the repo's .venv) stays ahead of conda's env on PATH even after `conda
+# activate`, so python/unsloth would resolve to the wrong interpreter.
+if [ -n "${VIRTUAL_ENV:-}" ]; then
+    echo "Deactivating inherited venv: ${VIRTUAL_ENV}"
+    PATH="$(echo "${PATH}" | tr ':' '\n' | grep -v -F "${VIRTUAL_ENV}/bin" | paste -sd: -)"
+    unset VIRTUAL_ENV
+fi
+
 CONDA_BASE="$(conda info --base 2>/dev/null || true)"
 if [ -z "${CONDA_BASE}" ]; then
     echo "ERROR: conda not found on PATH/in this shell."
@@ -88,6 +97,10 @@ fi
 
 echo "Python:  $(which python)"
 echo "Version: $(python --version)"
+if [[ "$(which python)" != "${CONDA_BASE}/envs/${CONDA_ENV_NAME}/bin/python" ]]; then
+    echo "ERROR: active python is not from conda env '${CONDA_ENV_NAME}'; aborting to avoid training with the wrong interpreter."
+    exit 1
+fi
 
 ####################################################
 # Secrets / API keys (HF_TOKEN, WANDB_API_KEY, ...)

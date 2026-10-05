@@ -1187,6 +1187,7 @@ def main():
     parser.add_argument('--dataset', type=str, default="bfcl", choices=["bfcl", "apibank", "apibench", "octopus", "octopus-overlap", "toole", "toole-overlap", "toolbench", "toolbench_1", "toolbench_2", "toolbench_3", "toole_90_10", "toole_85_15", "toole_75_25", "toole_70_30", "toole_50_50", "toole_35_65"], help='Dataset name for training and evaluation.')
     parser.add_argument('--max_train_samples', type=int, default=None, help="Maximum number of training instances to use (samples randomly). Default: use all.")
     parser.add_argument('--max_eval_samples', type=int, default=None, help="Maximum number of evaluation instances to use (samples randomly). Default: use all.")
+    parser.add_argument('--bfcl_validation_size', type=float, default=None, help="When set for BFCL, hold this fraction of the original train split out for validation; test remains untouched. Default: do not split.")
 
     # --- Model Args ---
     parser.add_argument('--inference_model_name', type=str, default="llama3.2", choices=["llama3-8B", "codestral-22B", "gemma2-2B", "groqLlama3Tool-8B","llama3.2","gemma3","qwen3"], help="Pseudo-name of the generative model (LLM) used for perplexity calculation.")
@@ -1250,6 +1251,12 @@ def main():
     parser.add_argument('--log_freq', type=int, default=100, help="Log training metrics to W&B every N steps.")
 
     args = parser.parse_args()
+
+    if args.bfcl_validation_size is not None:
+        if args.dataset != "bfcl":
+            parser.error("--bfcl_validation_size can only be used with --dataset bfcl")
+        if not 0 < args.bfcl_validation_size < 1:
+            parser.error("--bfcl_validation_size must be between 0 and 1")
 
     # ******************** Initial Setup ********************
     set_seed(args.seed) # Set seed for reproducibility
@@ -1352,6 +1359,26 @@ def main():
     dataset_downloader = DatasetDownloader(dataset_name=args.dataset)
     dataset = dataset_downloader.get_dataset() # Load raw dataset
 
+    if args.bfcl_validation_size is not None:
+        if "validation" in dataset:
+            raise ValueError("BFCL dataset already has a validation split; refusing to split train again.")
+        train_validation = dataset["train"].train_test_split(
+            test_size=args.bfcl_validation_size,
+            seed=args.seed,
+        )
+        dataset["train"] = train_validation["train"]
+        dataset["validation"] = train_validation["test"]
+        logger.info(
+            f"Created BFCL validation split from train: {len(dataset['validation'])} examples "
+            f"(fraction={args.bfcl_validation_size}, seed={args.seed}); test is unchanged."
+        )
+
+    eval_split_name = (
+        "validation"
+        if args.bfcl_validation_size is not None
+        else ("test" if "test" in dataset else "validation")
+    )
+
 
     print("********************")
     print(dataset)
@@ -1382,7 +1409,6 @@ def main():
         dataset["train"] = dataset["train"].select(selected_indices)
 
     if args.max_eval_samples:
-        eval_split_name = "test" if "test" in dataset else "validation"
         if eval_split_name in dataset:
             n_inst = min(args.max_eval_samples, len(dataset[eval_split_name]))
             logger.info(f"Sampling {n_inst} instances from the {eval_split_name} set.")
@@ -1398,10 +1424,9 @@ def main():
     # ******************** Define API Corpora ********************
     logger.info("Defining training and evaluation API corpora")
     train_api_corpus = list(set(dataset["train"]["api_description"]))
-    eval_split_name_for_corpus = "test" if "test" in dataset else "validation"
-    if eval_split_name_for_corpus in dataset:
+    if eval_split_name in dataset:
         # Align with train_mnrl.py: eval_api_corpus should be strictly from the eval split.
-        eval_api_corpus = list(set(dataset[eval_split_name_for_corpus]["api_description"]))
+        eval_api_corpus = list(set(dataset[eval_split_name]["api_description"]))
     else:
         logger.warning(f"No 'test' or 'validation' split found for eval corpus. Using training corpus for evaluation.")
         eval_api_corpus = train_api_corpus # Fallback, though ideally an eval split should exist

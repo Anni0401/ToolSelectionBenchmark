@@ -33,6 +33,11 @@ LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
 SEED="${SEED:-42}"
 EVAL_STEPS="${EVAL_STEPS:-0.2}"
 MAX_TRAIN_SAMPLES="${MAX_TRAIN_SAMPLES:-1000}"
+BFCL_VALIDATION_SIZE="${BFCL_VALIDATION_SIZE:-0.2}"
+BFCL_VALIDATION_ARGS=()
+if [[ "$DATASET_NAME" == "bfcl" ]]; then
+    BFCL_VALIDATION_ARGS=(--bfcl_validation_size "$BFCL_VALIDATION_SIZE")
+fi
 WARMUP_RATIO="${WARMUP_RATIO:-0.1}"
 SAVE_STRATEGY="${SAVE_STRATEGY:-epoch}"
 SAVE_CHECKPOINTS="${SAVE_CHECKPOINTS:-false}"
@@ -87,4 +92,5 @@ python3 "$PYTHON_SCRIPT" \
     $([ "$USE_LORA" = "true" ] && echo "--use_lora --lora_r $LORA_R --lora_alpha $LORA_ALPHA --lora_dropout $LORA_DROPOUT") \
     $([ "$USE_QLORA" = "true" ] && echo "--use_qlora") \
     --max_train_samples "$MAX_TRAIN_SAMPLES" \
+    "${BFCL_VALIDATION_ARGS[@]}" \
     "$@"

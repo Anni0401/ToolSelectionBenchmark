@@ -45,6 +45,15 @@ echo "===================================================="
 
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-py312}"
 
+# A venv inherited from the submitting shell (e.g. VS Code auto-activating
+# the repo's .venv) stays ahead of conda's env on PATH even after `conda
+# activate`, so python/unsloth would resolve to the wrong interpreter.
+if [ -n "${VIRTUAL_ENV:-}" ]; then
+    echo "Deactivating inherited venv: ${VIRTUAL_ENV}"
+    PATH="$(echo "${PATH}" | tr ':' '\n' | grep -v -F "${VIRTUAL_ENV}/bin" | paste -sd: -)"
+    unset VIRTUAL_ENV
+fi
+
 CONDA_BASE="$(conda info --base 2>/dev/null || true)"
 if [ -z "${CONDA_BASE}" ]; then
     echo "ERROR: conda not found on PATH/in this shell."
@@ -63,6 +72,10 @@ fi
 
 echo "Python:  $(which python)"
 echo "Version: $(python --version)"
+if [[ "$(which python)" != "${CONDA_BASE}/envs/${CONDA_ENV_NAME}/bin/python" ]]; then
+    echo "ERROR: active python is not from conda env '${CONDA_ENV_NAME}'; aborting to avoid training with the wrong interpreter."
+    exit 1
+fi
 
 ####################################################
 # Secrets / API keys (HF_TOKEN, WANDB_API_KEY, ...)

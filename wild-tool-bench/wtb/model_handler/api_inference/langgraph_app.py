@@ -63,6 +63,14 @@ except Exception:
 
 def _get_log_dir():
     """Return the per-strategy log directory (mirrors result/<strategy>/ layout)."""
+    override = os.getenv("LANGGRAPH_RESULT_DIR")
+    if override:
+        # Same value as the benchmark's --result-dir (relative to PROJECT_ROOT).
+        from wtb.constant import PROJECT_ROOT
+        log_dir = str((PROJECT_ROOT / override).resolve())
+        os.makedirs(log_dir, exist_ok=True)
+        return log_dir
+
     try:
         from wtb.constant import RESULT_PATH
         base = RESULT_PATH

@@ -583,6 +583,14 @@ This prints a sweep ID in the form `ENTITY/PROJECT/SWEEP_ID`.
 sbatch scripts/slurm_wandb_sweep_agent.sh ENTITY/PROJECT/SWEEP_ID
 ```
 
+For a bounded agent, pass the count as the second argument:
+
+```bash
+sbatch scripts/slurm_wandb_sweep_agent.sh ENTITY/PROJECT/SWEEP_ID 10
+```
+
+Do not include `wandb agent` in the `sbatch` command; the wrapper invokes it.
+
 Submit this command multiple times to run several combinations in parallel (each job/agent trains one combination at a time on its GPU, then requests the next pending one from the sweep). Optionally cap how many runs a single agent executes: `sbatch scripts/slurm_wandb_sweep_agent.sh ENTITY/PROJECT/SWEEP_ID 5`.
 
 The default grid (`1e-6,5e-6,1e-5` learning rates × `2,5` epochs × `0.1,0.3,0.5` lambda × `0.5,1.0` beta × `0.5,1.0` gamma, all varied independently) totals 72 runs. All runs log to the same W&B project/sweep, so results can be compared directly in the W&B UI (parallel coordinates plot, parameter importance, etc.). Adjust `main/sweep_ports.yaml` to change the grid or fixed parameters (e.g. `DATASET_NAME`, `RETRIEVAL_MODEL_NAME`) via environment variables in `train_ports_sweep.sh`.

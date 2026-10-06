@@ -546,6 +546,7 @@ def train(dataset: Dataset,
            max_checkpoints: int = None,
            weight_decay: float = 0.01,
            save_checkpoints: bool = False,
+           final_test_eval: bool = False,
            infer_model_name: str = "gpt2",
            retr_model_name: str = "roberta-base"):
     """
@@ -602,6 +603,7 @@ def train(dataset: Dataset,
         max_checkpoints (int, optional): Maximum number of checkpoints to keep. Older/worse ones might be deleted. Defaults to None (keep all).
         weight_decay (float, optional): Weight decay for the AdamW optimizer. Defaults to 0.01.
         save_checkpoints (bool, optional): Whether to save model checkpoints during training. Defaults to False.
+        final_test_eval (bool, optional): Skip evaluation during training and evaluate test once after training.
     """
     # Default the inference LLM to the retriever's device when no second GPU was assigned
     if infer_device is None:
@@ -639,6 +641,7 @@ def train(dataset: Dataset,
         "save_steps": save_steps,
         "eval_strategy": eval_strategy,
         "eval_steps": eval_steps,
+        "final_test_eval": final_test_eval,
         "save_checkpoints": save_checkpoints,
         "inference_model_name": infer_model_name,
         "retr_model_name": retr_model_name
@@ -676,26 +679,28 @@ def train(dataset: Dataset,
         "epoch": 0,
         "steps": 0
     }
-    ranks_eval, ndcg_eval, scores_eval = run_evaluation(**eval_config)
+    if final_test_eval:
+        logger.info("Skipping initial evaluation; the test split is reserved for final evaluation.")
+    else:
+        ranks_eval, ndcg_eval, scores_eval = run_evaluation(**eval_config)
 
-    logger.info("--- Initial Evaluation Summary (eval split) ---")
-    logger.info(f"  Accuracy@k values ({k_eval_values_accuracy}): {[f'{x:.2f}%' for x in ranks_eval]}")
-    logger.info(f"  NDCG@k values ({k_eval_values_ndcg}): {[f'{x:.4f}' for x in ndcg_eval]}")
-    if wandb.run: # Log to W&B if initialized
-        log_to_wandb(scores_eval, epoch=0, steps=0, prefix="initial_eval")
+        logger.info("--- Initial Evaluation Summary (eval split) ---")
+        logger.info(f"  Accuracy@k values ({k_eval_values_accuracy}): {[f'{x:.2f}%' for x in ranks_eval]}")
+        logger.info(f"  NDCG@k values ({k_eval_values_ndcg}): {[f'{x:.4f}' for x in ndcg_eval]}")
+        if wandb.run:
+            log_to_wandb(scores_eval, epoch=0, steps=0, prefix="initial_eval")
 
-    # --- Evaluation on Training Set ---
-    logger.info(f"Starting Initial Evaluation (Train)")
-    train_eval_config = eval_config.copy()
-    train_eval_config["eval_api_corpus"] = train_api_corpus
-    train_eval_config["eval_name"] = "train_eval"
-    ranks_train_eval, ndcg_train_eval, scores_train_eval = run_evaluation(**train_eval_config)
+        logger.info("Starting Initial Evaluation (Train)")
+        train_eval_config = eval_config.copy()
+        train_eval_config["eval_api_corpus"] = train_api_corpus
+        train_eval_config["eval_name"] = "train_eval"
+        ranks_train_eval, ndcg_train_eval, scores_train_eval = run_evaluation(**train_eval_config)
 
-    logger.info("--- Initial Evaluation Summary (train_eval split) ---")
-    logger.info(f"  Accuracy@k values ({k_eval_values_accuracy}): {[f'{x:.2f}%' for x in ranks_train_eval]}")
-    logger.info(f"  NDCG@k values ({k_eval_values_ndcg}): {[f'{x:.4f}' for x in ndcg_train_eval]}")
-    if wandb.run: # Log to W&B if initialized
-        log_to_wandb(scores_train_eval, epoch=0, steps=0, prefix="initial_train_eval")
+        logger.info("--- Initial Evaluation Summary (train_eval split) ---")
+        logger.info(f"  Accuracy@k values ({k_eval_values_accuracy}): {[f'{x:.2f}%' for x in ranks_train_eval]}")
+        logger.info(f"  NDCG@k values ({k_eval_values_ndcg}): {[f'{x:.4f}' for x in ndcg_train_eval]}")
+        if wandb.run:
+            log_to_wandb(scores_train_eval, epoch=0, steps=0, prefix="initial_train_eval")
 
     # ******************** Optimizer and Scheduler Setup ********************
     if train_batch_size < 1:
@@ -1078,7 +1083,7 @@ def train(dataset: Dataset,
                 del queries, pos_docs, neg_docs_processed, input_prompt_pos, input_prompt_neg
 
                 # ******************** Step-based Evaluation Trigger ********************
-                if eval_strategy == "steps" and evaluation_step_interval is not None and global_step_counter % evaluation_step_interval == 0 and did_optimizer_step:
+                if not final_test_eval and eval_strategy == "steps" and evaluation_step_interval is not None and global_step_counter % evaluation_step_interval == 0 and did_optimizer_step:
                     logger.info(f"--- Running Step-Based Evaluation (Step: {global_step_counter}, {((epoch_step_counter/total_epoch_steps)*100):.1f}% through epoch) ---")
                     eval_config_step = {
                         "retr_model" : retr_model,
@@ -1138,7 +1143,7 @@ def train(dataset: Dataset,
                      logger.warning(f"Tried to remove checkpoint {ckpt_to_remove}, but it was not found.")
 
         # ******************** Epoch-based Evaluation Trigger ********************
-        if eval_strategy == "epoch":
+        if not final_test_eval and eval_strategy == "epoch":
             logger.info(f"--- Running Epoch-End Evaluation (Epoch: {epoch+1}) ---")
             eval_config_epoch = {
                 "retr_model" : retr_model,
@@ -1170,6 +1175,16 @@ def train(dataset: Dataset,
         logger.info(f"Epoch {epoch+1}/{num_epochs} completed. Avg loss: {epoch_avg_loss:.4f}")
         wandb.log({"epoch/average_loss": epoch_avg_loss, "epoch": epoch + 1}, step=global_step_counter)
 
+    if final_test_eval:
+        final_test_config = eval_config.copy()
+        final_test_config.update(
+            eval_name="test_final",
+            epoch=num_epochs,
+            steps=global_step_counter,
+        )
+        logger.info("Training finished; running the one-time final test evaluation.")
+        run_evaluation(**final_test_config)
+
     logger.info("Training and evaluations finished.")
     wandb.finish() # Ensure W&B run is closed
 
@@ -1188,6 +1203,7 @@ def main():
     parser.add_argument('--max_train_samples', type=int, default=None, help="Maximum number of training instances to use (samples randomly). Default: use all.")
     parser.add_argument('--max_eval_samples', type=int, default=None, help="Maximum number of evaluation instances to use (samples randomly). Default: use all.")
     parser.add_argument('--bfcl_validation_size', type=float, default=None, help="When set for BFCL, hold this fraction of the original train split out for validation; test remains untouched. Default: do not split.")
+    parser.add_argument('--final_test_eval', action='store_true', help="Skip evaluations during training and evaluate the test split once after training; requires no validation split.")
 
     # --- Model Args ---
     parser.add_argument('--inference_model_name', type=str, default="llama3.2", choices=["llama3-8B", "codestral-22B", "gemma2-2B", "groqLlama3Tool-8B","llama3.2","gemma3","qwen3"], help="Pseudo-name of the generative model (LLM) used for perplexity calculation.")
@@ -1257,6 +1273,8 @@ def main():
             parser.error("--bfcl_validation_size can only be used with --dataset bfcl")
         if not 0 < args.bfcl_validation_size < 1:
             parser.error("--bfcl_validation_size must be between 0 and 1")
+    if args.final_test_eval and args.bfcl_validation_size is not None:
+        parser.error("--final_test_eval cannot be combined with --bfcl_validation_size")
 
     # ******************** Initial Setup ********************
     set_seed(args.seed) # Set seed for reproducibility
@@ -1358,6 +1376,9 @@ def main():
     logger.info(f"Loading dataset: {args.dataset}")
     dataset_downloader = DatasetDownloader(dataset_name=args.dataset)
     dataset = dataset_downloader.get_dataset() # Load raw dataset
+
+    if args.final_test_eval and ("test" not in dataset or "validation" in dataset):
+        parser.error("--final_test_eval requires a test split and no validation split")
 
     if args.bfcl_validation_size is not None:
         if "validation" in dataset:
@@ -1512,6 +1533,7 @@ def main():
         "save_dir": args.save_dir,
         "max_checkpoints": args.max_checkpoints,
         "save_checkpoints": args.save_checkpoints,
+        "final_test_eval": args.final_test_eval,
         "infer_model_name": pseudo_model_name,
         "retr_model_name": retr_model_name,
     }

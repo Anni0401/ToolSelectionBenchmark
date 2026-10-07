@@ -2613,7 +2613,7 @@ class Qwen3EmbeddingBasedToolSelector(OpenAIEmbeddingBasedToolSelector):
         # Keep embedding selections in the same per-strategy JSONL log as the
         # other selectors. This reflects the tools actually available to ranking.
         log_tool_selection(
-            strategy_name="qwen3_embedding",
+            strategy_name=getattr(self, "strategy_name", "qwen3_embedding"),
             query=query,
             available_tools_count=len(all_tools),
             selected_tools=selected,
@@ -2729,6 +2729,27 @@ class Qwen3EmbeddingContextBasedToolSelector(Qwen3EmbeddingBasedToolSelector):
         if not full_conversation:
             return ""
         return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {full_conversation}"
+
+
+class Qwen3EmbeddingContextPortsLoraToolSelector(Qwen3EmbeddingContextBasedToolSelector):
+    """Full-context Qwen3 retrieval using the PORTS-trained embedding LoRA adapter."""
+
+    def __init__(self, top_k: int = 5, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        adapter_cache = cache_file or os.path.join(
+            os.path.dirname(__file__),
+            "tool_embeddings_cache_qwen3_ports_lora.json",
+        )
+        super().__init__(
+            top_k=top_k,
+            cache_file=adapter_cache,
+            tools_file=tools_file,
+            schema_cache_file=schema_cache_file,
+        )
+        self.model = os.getenv(
+            "QWEN3_EMBEDDING_MODEL", "qwen3-embedding-8b-ports-lora"
+        )
+        self.strategy_name = "qwen3_embedding_context_ports_lora"
 
 
 class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedToolSelector):
@@ -2867,6 +2888,8 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         """Build the rewrite prompt, trimming the resolved query from the front if it is still too long."""
         sampled_tool_documents = self._sample_tool_documents()
         budget = self._char_budget(self.rewrite_max_output_tokens)
+        # Sampled tool schemas are token-dense and unbounded; cap them so the query always has room.
+        sampled_tool_documents = sampled_tool_documents[: budget // 2]
         static_len = len(self.REWRITE_PROMPT_TEMPLATE.format(
             sampled_tool_documents=sampled_tool_documents, resolved_query=""
         ))
@@ -2967,12 +2990,17 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         except urllib.error.HTTPError as exc:
             error_data = exc.read().decode("utf-8")
             overflow = self._CONTEXT_OVERFLOW_RE.search(error_data)
-            if overflow and _attempt < 3:
+            if overflow and _attempt < 5:
                 max_ctx, out_tok, in_tok = (int(g) for g in overflow.groups())
                 overage_tokens = (in_tok + out_tok) - max_ctx
-                # Trim more than the reported overage since the char/token ratio is an estimate too.
+                # Prefer shrinking the completion budget; the prompt may already be nearly full.
+                room = max_ctx - in_tok - self.context_safety_margin_tokens
+                if 64 <= room < max_output_tokens:
+                    print(f"[QUERY REWRITE] Context overflow; retrying with max_tokens {max_output_tokens} -> {room}")
+                    return self._call_llm(prompt, room, _attempt=_attempt + 1)
+                # Char/token ratio is only an estimate, so trim more than the overage and escalate per attempt.
                 trim_chars = int((overage_tokens + self.context_safety_margin_tokens)
-                                  * self.chars_per_token_estimate * 2)
+                                  * self.chars_per_token_estimate * 2 * (_attempt + 1))
                 trimmed_prompt = self._truncate_tail(prompt, max(0, len(prompt) - trim_chars))
                 print(
                     f"[QUERY REWRITE] Prompt exceeded context window "
@@ -3170,12 +3198,15 @@ class Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(Qwen3QueryRewriteEmbe
         except urllib.error.HTTPError as exc:
             error_data = exc.read().decode("utf-8")
             overflow = self._CONTEXT_OVERFLOW_RE.search(error_data)
-            if overflow and _attempt < 3:
+            if overflow and _attempt < 5:
                 max_ctx, out_tok, in_tok = (int(g) for g in overflow.groups())
                 overage_tokens = (in_tok + out_tok) - max_ctx
-                # Trim more than the reported overage since the char/token ratio is an estimate too.
+                room = max_ctx - in_tok - self.context_safety_margin_tokens
+                if 64 <= room < max_output_tokens:
+                    print(f"[QUERY REWRITE DPO] Context overflow; retrying with max_tokens {max_output_tokens} -> {room}")
+                    return self._call_dpo_llm(prompt, room, _attempt=_attempt + 1)
                 trim_chars = int((overage_tokens + self.context_safety_margin_tokens)
-                                  * self.chars_per_token_estimate * 2)
+                                  * self.chars_per_token_estimate * 2 * (_attempt + 1))
                 trimmed_prompt = self._truncate_tail(prompt, max(0, len(prompt) - trim_chars))
                 print(
                     f"[QUERY REWRITE DPO] Prompt exceeded context window "
@@ -4183,6 +4214,8 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return Qwen3EmbeddingBasedToolSelector(top_k=5)
     elif mode == "qwen3_embedding_context":
         return Qwen3EmbeddingContextBasedToolSelector(top_k=5)
+    elif mode == "qwen3_embedding_context_ports_lora":
+        return Qwen3EmbeddingContextPortsLoraToolSelector(top_k=5)
     elif mode == "qwen3_query_rewrite_embedding_context":
         return Qwen3QueryRewriteEmbeddingContextToolSelector(top_k=5)
     elif mode == "qwen3_query_rewrite_dpo_lora_embedding_context":

@@ -368,6 +368,11 @@ echo "  MAX_CONVERSATION_CHARS=${LANGGRAPH_SELECTOR_MAX_CONVERSATION_CHARS}"
 echo "  MAX_TOOL_DESC_CHARS=${LANGGRAPH_SELECTOR_MAX_TOOL_DESC_CHARS}"
 echo "  CONTEXT_MODE=${LANGGRAPH_SELECTOR_CONTEXT_MODE}"
 
+# Single source of truth: benchmark results and server-side logs share this dir.
+RESULT_DIR="${RESULT_DIR:-result_v3_120B/hierarchical}"
+export LANGGRAPH_RESULT_DIR="${RESULT_DIR}"
+echo "Result dir: ${RESULT_DIR}"
+
 python -u -m wtb.model_handler.api_inference.langgraph_app &
 LANGGRAPH_PID=$!
 
@@ -401,7 +406,7 @@ echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result_120B_v2/hierarchical \
+    --result-dir "${RESULT_DIR}" \
     --num-threads 1
 
 echo ""

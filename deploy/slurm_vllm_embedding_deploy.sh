@@ -29,11 +29,59 @@ fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 export MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-Embedding-8B}"
+EMBEDDING_LORA_ADAPTER_DIR="${EMBEDDING_LORA_ADAPTER_DIR:-}"
+EMBEDDING_LORA_MODEL="${EMBEDDING_LORA_MODEL:-qwen3-embedding-8b-ports-lora}"
+EMBEDDING_LORA_MAX_RANK="${EMBEDDING_LORA_MAX_RANK:-16}"
+SERVED_EMBEDDING_MODEL="${MODEL_NAME}"
 
 PORT="${VLLM_EMBEDDING_PORT:-8002}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.4}"
 DTYPE="${DTYPE:-float16}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
+LORA_ARGS=()
+
+if [[ -n "${EMBEDDING_LORA_ADAPTER_DIR}" ]]; then
+    if [[ ! -f "${EMBEDDING_LORA_ADAPTER_DIR}/adapter_config.json" || ! -f "${EMBEDDING_LORA_ADAPTER_DIR}/adapter_model.safetensors" ]]; then
+        echo "[ERROR] Embedding LoRA adapter files not found in: ${EMBEDDING_LORA_ADAPTER_DIR}" >&2
+        exit 1
+    fi
+
+    python - "${EMBEDDING_LORA_ADAPTER_DIR}/adapter_config.json" "${MODEL_NAME}" "${EMBEDDING_LORA_MAX_RANK}" <<'PYTHON_EOF'
+import json
+import sys
+
+config_path, model_name, max_rank = sys.argv[1:]
+with open(config_path, encoding="utf-8") as config_file:
+    config = json.load(config_file)
+
+base_model = config.get("base_model_name_or_path")
+rank = int(config.get("r", 0))
+task_type = config.get("task_type")
+if base_model != model_name:
+    raise SystemExit(
+        f"[ERROR] Adapter base model {base_model!r} does not match MODEL_NAME {model_name!r}"
+    )
+if rank > int(max_rank):
+    raise SystemExit(
+        f"[ERROR] Adapter rank {rank} exceeds EMBEDDING_LORA_MAX_RANK={max_rank}"
+    )
+if task_type != "FEATURE_EXTRACTION":
+    raise SystemExit(
+        f"[ERROR] Expected a FEATURE_EXTRACTION adapter, got {task_type!r}"
+    )
+print(f"[INFO] Adapter verified: base={base_model}, rank={rank}, task={task_type}")
+PYTHON_EOF
+
+    LORA_ARGS=(
+        --enable-lora
+        --max-lora-rank "${EMBEDDING_LORA_MAX_RANK}"
+        --lora-modules "${EMBEDDING_LORA_MODEL}=${EMBEDDING_LORA_ADAPTER_DIR}"
+    )
+    SERVED_EMBEDDING_MODEL="${EMBEDDING_LORA_MODEL}"
+    SERVED_SELECTION_MODE="qwen3_embedding_context_ports_lora"
+else
+    SERVED_SELECTION_MODE="qwen3_embedding"
+fi
 
 LOG_DIR="${PROJECT_ROOT}/logs"
 
@@ -61,13 +109,19 @@ mkdir -p \
 # Force vLLM v0 engine.
 export VLLM_USE_V1=0
 
-# Avoid Triton compilation issues on this cluster.
-export TRITON_INTERPRET=1
+# The Triton interpreter segfaults in vLLM's LoRA kernels, so only use it without an adapter.
+if [[ -z "${EMBEDDING_LORA_ADAPTER_DIR}" ]]; then
+    export TRITON_INTERPRET=1
+else
+    unset TRITON_INTERPRET
+fi
 
 echo "=========================================="
 echo "vLLM Qwen3-Embedding-8B Deployment"
 echo "=========================================="
 echo "Model:                  ${MODEL_NAME}"
+echo "Embedding LoRA model:   ${EMBEDDING_LORA_MODEL}"
+echo "Embedding LoRA adapter: ${EMBEDDING_LORA_ADAPTER_DIR:-disabled}"
 echo "Port:                   ${PORT}"
 echo "GPU Memory Utilization: ${GPU_MEMORY_UTILIZATION}"
 echo "Data Type:              ${DTYPE}"
@@ -132,8 +186,8 @@ Embedding server: ${EMBEDDING_ENDPOINT}
 
 Environment variables to set before running the LangGraph server:
   export QWEN3_EMBEDDING_BASE_URL=${EMBEDDING_ENDPOINT}
-  export QWEN3_EMBEDDING_MODEL=${MODEL_NAME}
-  export LANGGRAPH_TOOL_SELECTION_MODE=qwen3_embedding
+    export QWEN3_EMBEDDING_MODEL=${SERVED_EMBEDDING_MODEL}
+    export LANGGRAPH_TOOL_SELECTION_MODE=${SERVED_SELECTION_MODE}
 EOF
 
 echo "[INFO] Endpoint info saved to: ${ENDPOINT_FILE}"
@@ -147,6 +201,7 @@ echo ""
 
 python -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_NAME}" \
+    --served-model-name "${MODEL_NAME}" \
     --port "${PORT}" \
     --host 0.0.0.0 \
     --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
@@ -157,4 +212,5 @@ python -m vllm.entrypoints.openai.api_server \
     --enforce-eager \
     --download-dir "${CHECKPOINT_DIR}" \
     --trust-remote-code \
+    "${LORA_ARGS[@]}" \
     2>&1 | tee -a "${LOG_DIR}/vllm_embedding_server.log"

@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=wtb-query-rewrite-dpo-lora
+#SBATCH --job-name=wtb-embedding-ports-lora
 #SBATCH --partition=gpu-vram-94gb
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:3
-#SBATCH --mem=180G
+#SBATCH --gres=gpu:2
+#SBATCH --mem=110G
 #SBATCH --time=12:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
@@ -59,75 +59,50 @@ export HF_HUB_ETAG_TIMEOUT=60
 export TOKENIZERS_PARALLELISM=false
 
 ####################################################
-# vLLM environment
-####################################################
-
-# vLLM 0.23/0.24 uses V1 by default.
-# Remove legacy variables that can produce warnings or
-# interfere with the current vLLM configuration.
-unset VLLM_USE_V1 || true
-unset VLLM_EMBEDDING_PORT || true
-
-####################################################
 # NCCL configuration
 ####################################################
 
 export NCCL_NET_PLUGIN=none
 export NCCL_IB_DISABLE=1
 export NCCL_P2P_LEVEL=NVL
-####################################################
-# Laguna-specific configuration
-####################################################
-
-export VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER=0
-export VLLM_ENGINE_READY_TIMEOUT_S=1800
 
 ####################################################
 # Virtual environments and models
 ####################################################
 
-LAGUNA_VENV="${WORK}/venvs/venv-laguna"
+GPT_VENV="${WORK}/venvs/venv-gptoss"
 BENCH_VENV="${PROJECT_ROOT}/.venv"
 
-LAGUNA_MODEL="${LAGUNA_MODEL:-poolside/Laguna-S-2.1-FP8}"
+GPT_MODEL="${WORK}/huggingface/hub/models--openai--gpt-oss-120b/snapshots/b5c939de8f754692c1647ca79fbf85e8c1e70f8a"
 
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}"
-# Base model the resolver stage (and the vLLM engine hosting the LoRA adapter) is served from.
-REWRITE_BASE_MODEL="${REWRITE_BASE_MODEL:-Qwen/Qwen3-8B}"
-# Served-model-name the DPO LoRA adapter is registered under on that same vLLM engine.
-REWRITE_MODEL="${REWRITE_MODEL:-qwen3-8b-dpo-lora}"
-# Local PEFT/LoRA adapter dir (base_model_name_or_path=Qwen/Qwen3-8B) produced by train_dpo_qwen3_lora.py.
-REWRITE_LORA_ADAPTER_DIR="${REWRITE_LORA_ADAPTER_DIR:-${PROJECT_ROOT}/multi-agent-framework/qwen3-8b-dpo-lora-final/final}"
+# Served-model-name the PORTS LoRA adapter is registered under on the embedding engine.
+EMBEDDING_LORA_MODEL="${EMBEDDING_LORA_MODEL:-qwen3-embedding-8b-ports-lora}"
+# PEFT adapter dir (base_model_name_or_path=Qwen/Qwen3-Embedding-8B) produced by PORTS training.
+EMBEDDING_LORA_ADAPTER_DIR="${EMBEDDING_LORA_ADAPTER_DIR:-${WORK}/ports/main/output/ports/ports_retriever_20261006_233629/checkpoint-epoch-2}"
+EMBEDDING_LORA_MAX_RANK="${EMBEDDING_LORA_MAX_RANK:-16}"
 
-LAGUNA_PORT="${LAGUNA_PORT:-8000}"
+GPT_PORT="${GPT_PORT:-8000}"
 EMBEDDING_PORT="${EMBEDDING_PORT:-8002}"
-REWRITE_PORT="${REWRITE_PORT:-8004}"
-LANGGRAPH_PORT="${LANGGRAPH_PORT:-8001}"
-
-# GPU 1 runs two independent vLLM processes.
-# Keep their memory reservations conservative.
-EMBEDDING_GPU_MEM_UTIL="${EMBEDDING_GPU_MEM_UTIL:-0.35}"
-REWRITE_GPU_MEM_UTIL="${REWRITE_GPU_MEM_UTIL:-0.45}"
 
 HOST="$(hostname)"
 
 echo "===================================================="
-echo "Job ID:             ${SLURM_JOB_ID:-unknown}"
-echo "Running on host:    ${HOST}"
-echo "Project root:       ${PROJECT_ROOT}"
-echo "Executor model:     ${LAGUNA_MODEL}"
-echo "Embedding model:    ${EMBEDDING_MODEL}"
-echo "Rewrite base model: ${REWRITE_BASE_MODEL}"
-echo "Rewrite LoRA:       ${REWRITE_MODEL} (${REWRITE_LORA_ADAPTER_DIR})"
+echo "Job ID:          ${SLURM_JOB_ID:-unknown}"
+echo "Running on host: ${HOST}"
+echo "Project root:    ${PROJECT_ROOT}"
+echo "GPT model:       ${GPT_MODEL}"
+echo "Embedding model: ${EMBEDDING_MODEL}"
+echo "Embedding LoRA:  ${EMBEDDING_LORA_MODEL} (${EMBEDDING_LORA_ADAPTER_DIR})"
 echo "===================================================="
 
 ####################################################
 # Validate paths
 ####################################################
 
-if [[ ! -f "${LAGUNA_VENV}/bin/activate" ]]; then
-    echo "ERROR: Laguna virtual environment not found:"
-    echo "       ${LAGUNA_VENV}"
+if [[ ! -f "${GPT_VENV}/bin/activate" ]]; then
+    echo "ERROR: GPT virtual environment not found:"
+    echo "       ${GPT_VENV}"
     exit 1
 fi
 
@@ -137,6 +112,11 @@ if [[ ! -f "${BENCH_VENV}/bin/activate" ]]; then
     exit 1
 fi
 
+if [[ ! -d "${GPT_MODEL}" ]]; then
+    echo "ERROR: GPT model snapshot does not exist:"
+    echo "       ${GPT_MODEL}"
+    exit 1
+fi
 
 if [[ ! -d "${BENCHMARK_ROOT}" ]]; then
     echo "ERROR: Benchmark directory not found:"
@@ -150,9 +130,9 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${REWRITE_LORA_ADAPTER_DIR}/adapter_config.json" ]]; then
-    echo "ERROR: DPO LoRA adapter not found:"
-    echo "       ${REWRITE_LORA_ADAPTER_DIR}"
+if [[ ! -f "${EMBEDDING_LORA_ADAPTER_DIR}/adapter_config.json" || ! -f "${EMBEDDING_LORA_ADAPTER_DIR}/adapter_model.safetensors" ]]; then
+    echo "ERROR: Embedding LoRA adapter not found:"
+    echo "       ${EMBEDDING_LORA_ADAPTER_DIR}"
     exit 1
 fi
 
@@ -191,21 +171,12 @@ update_env_variable() {
 
 update_env_variable \
     "EXECUTING_LLM_BASE_URL" \
-    "http://${HOST}:${LAGUNA_PORT}/v1" \
+    "http://${HOST}:${GPT_PORT}/v1" \
     "${ENV_FILE}"
 
 update_env_variable \
     "EXECUTING_LLM_MODEL" \
-    "${LAGUNA_MODEL}" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "EXECUTING_LLM_API_KEY" \
-    "EMPTY" \
-    "${ENV_FILE}"
-update_env_variable \
-    "EXECUTING_LLM_TOOL_CALL_PARSER" \
-    "poolside_v1" \
+    "openai/gpt-oss-120b" \
     "${ENV_FILE}"
 
 update_env_variable \
@@ -215,52 +186,12 @@ update_env_variable \
 
 update_env_variable \
     "QWEN3_EMBEDDING_MODEL" \
-    "${EMBEDDING_MODEL}" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "QWEN3_EMBEDDING_API_KEY" \
-    "EMPTY" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "QUERY_REWRITE_LLM_ENDPOINT" \
-    "http://${HOST}:${REWRITE_PORT}/v1/chat/completions" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "QUERY_REWRITE_LLM_MODEL" \
-    "${REWRITE_BASE_MODEL}" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "QUERY_REWRITE_LLM_API_KEY" \
-    "EMPTY" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "QUERY_REWRITE_DPO_LLM_ENDPOINT" \
-    "http://${HOST}:${REWRITE_PORT}/v1/chat/completions" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "QUERY_REWRITE_DPO_LLM_MODEL" \
-    "${REWRITE_MODEL}" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "QUERY_REWRITE_DPO_LLM_API_KEY" \
-    "EMPTY" \
+    "${EMBEDDING_LORA_MODEL}" \
     "${ENV_FILE}"
 
 update_env_variable \
     "LANGGRAPH_TOOL_SELECTION_MODE" \
-    "qwen3_query_rewrite_dpo_lora_embedding_context" \
-    "${ENV_FILE}"
-
-update_env_variable \
-    "LANGGRAPH_ENDPOINT" \
-    "http://127.0.0.1:${LANGGRAPH_PORT}/execute" \
+    "qwen3_embedding_context_ports_lora" \
     "${ENV_FILE}"
 
 echo ""
@@ -270,9 +201,8 @@ echo "Updated ${ENV_FILE}"
 # Background process variables
 ####################################################
 
-LAGUNA_PID=""
+GPT_PID=""
 EMBED_PID=""
-REWRITE_PID=""
 LANGGRAPH_PID=""
 
 ####################################################
@@ -289,7 +219,7 @@ cleanup() {
     echo "Cleaning up..."
     echo "===================================================="
 
-    for pid_name in LANGGRAPH_PID REWRITE_PID EMBED_PID GPT_PID; do
+    for pid_name in LANGGRAPH_PID EMBED_PID GPT_PID; do
         local pid="${!pid_name:-}"
 
         if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -298,9 +228,10 @@ cleanup() {
         fi
     done
 
+    # Give the servers a moment to terminate normally.
     sleep 3
 
-    for pid_name in LANGGRAPH_PID REWRITE_PID EMBED_PID GPT_PID; do
+    for pid_name in LANGGRAPH_PID EMBED_PID GPT_PID; do
         local pid="${!pid_name:-}"
 
         if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -310,9 +241,8 @@ cleanup() {
     done
 
     [[ -n "${LANGGRAPH_PID}" ]] && wait "${LANGGRAPH_PID}" 2>/dev/null || true
-    [[ -n "${REWRITE_PID}" ]] && wait "${REWRITE_PID}" 2>/dev/null || true
     [[ -n "${EMBED_PID}" ]] && wait "${EMBED_PID}" 2>/dev/null || true
-     [[ -n "${LAGUNA_PID}" ]] && wait "${LAGUNA_PID}" 2>/dev/null || true
+    [[ -n "${GPT_PID}" ]] && wait "${GPT_PID}" 2>/dev/null || true
 
     echo "Cleanup complete."
 
@@ -321,13 +251,11 @@ cleanup() {
 
 on_error() {
     local exit_code=$?
-
     echo "" >&2
-    echo "[ERROR] Query-rewrite embedding startup script failed." >&2
+    echo "[ERROR] Two-GPU startup script failed." >&2
     echo "[ERROR] Exit code: ${exit_code}" >&2
     echo "[ERROR] Line: ${BASH_LINENO[0]:-${LINENO}}" >&2
     echo "[ERROR] Command: ${BASH_COMMAND}" >&2
-
     return "${exit_code}"
 }
 
@@ -378,7 +306,6 @@ wait_for_service() {
     echo "URL: ${health_url}"
 
     while true; do
-
         if curl \
             --connect-timeout 3 \
             --max-time 5 \
@@ -393,8 +320,8 @@ wait_for_service() {
             echo ""
             echo "ERROR: ${service_name} exited during startup."
 
+            # wait prints the process exit status when applicable.
             wait "${process_id}" || true
-
             return 1
         fi
 
@@ -402,7 +329,6 @@ wait_for_service() {
             echo ""
             echo "ERROR: ${service_name} did not become ready within"
             echo "       ${timeout_seconds} seconds."
-
             return 1
         fi
 
@@ -445,7 +371,6 @@ required = [
     "huggingface_hub",
     "transformers",
     "torch",
-    "vllm",
     "fastapi",
     "uvicorn",
     "overrides",
@@ -463,102 +388,86 @@ if missing:
         + ", ".join(missing),
         file=sys.stderr,
     )
-
     print(
         "Install them before submitting the SLURM job.",
         file=sys.stderr,
     )
-
     sys.exit(1)
 PY
 
 ####################################################
-# Download Qwen models sequentially
+# Download embedding model
 ####################################################
 
 echo ""
 echo "===================================================="
-echo "Preparing Qwen model files"
+echo "Preparing embedding model files"
 echo "===================================================="
 
-# Download before any server starts to avoid cache races.
-# The DPO adapter is local (produced by train_dpo_qwen3_lora.py); only the base model
-# it was fine-tuned from needs to come from the Hub.
 download_model "${EMBEDDING_MODEL}"
-download_model "${REWRITE_BASE_MODEL}"
 
 echo ""
-echo "Both Qwen models are available locally."
+echo "Embedding model is available locally."
 
 ####################################################
-# Start Laguna on GPUs 0 + 1
+# Start GPT-OSS on GPU 0
 ####################################################
 
 echo ""
 echo "===================================================="
-echo "Starting Laguna on GPUs 0 and 1"
+echo "Starting GPT-OSS on GPU 0"
 echo "===================================================="
 
-deactivate 2>/dev/null || true
-source "${LAGUNA_VENV}/bin/activate"
+source "${GPT_VENV}/bin/activate"
 
-echo "Laguna environment:"
-echo "Python: $(command -v python)"
-python --version
-
-echo "vLLM:"
-python -c "import vllm; print(vllm.__version__)"
-
-CUDA_VISIBLE_DEVICES=0,1 \
-HF_HOME="${HF_HOME}" \
-HF_HUB_CACHE="${HF_HUB_CACHE}" \
-HF_XET_CACHE="${HF_XET_CACHE}" \
+CUDA_VISIBLE_DEVICES=0 \
 HF_HUB_DISABLE_XET=1 \
-vllm serve "${LAGUNA_MODEL}" \
-    --served-model-name "${LAGUNA_MODEL}" \
-    --tensor-parallel-size 2 \
-    --trust-remote-code \
-    --max-model-len 262144 \
+vllm serve "${GPT_MODEL}" \
+    --served-model-name openai/gpt-oss-120b \
+    --tensor-parallel-size 1 \
+    --dtype bfloat16 \
     --gpu-memory-utilization 0.90 \
-    --enable-auto-tool-choice \
-    --tool-call-parser poolside_v1 \
-    --reasoning-parser poolside_v1 \
+    --enforce-eager \
     --host 0.0.0.0 \
-    --port "${LAGUNA_PORT}" &
+    --port "${GPT_PORT}" \
+    --tool-call-parser openai \
+    --enable-auto-tool-choice &
 
-LAGUNA_PID=$!
+GPT_PID=$!
 
-echo "LAGUNA PID: ${LAGUNA_PID}"
+echo "GPT-OSS PID: ${GPT_PID}"
 
 wait_for_service \
-    "LAGUNA" \
-    "http://${HOST}:${LAGUNA_PORT}/v1/models" \
-    "${LAGUNA_PID}" \
+    "GPT-OSS" \
+    "http://${HOST}:${GPT_PORT}/v1/models" \
+    "${GPT_PID}" \
     1800
 
 ####################################################
 # Reactivate benchmark environment
 ####################################################
 
-deactivate 2>/dev/null || true
 source "${BENCH_VENV}/bin/activate"
 
 ####################################################
-# Start embedding server on GPU 1
+# Start embedding server (with PORTS LoRA) on GPU 1
 ####################################################
 
 echo ""
 echo "===================================================="
-echo "Starting embedding server on GPU 2"
+echo "Starting embedding server with PORTS LoRA on GPU 1"
 echo "===================================================="
 
-CUDA_VISIBLE_DEVICES=2 \
+CUDA_VISIBLE_DEVICES=1 \
 HF_HOME="${HF_HOME}" \
 HF_HUB_CACHE="${HF_HUB_CACHE}" \
 HF_XET_CACHE="${HF_XET_CACHE}" \
 HF_HUB_DISABLE_XET=1 \
 MODEL_NAME="${EMBEDDING_MODEL}" \
-GPU_MEMORY_UTILIZATION="${EMBEDDING_GPU_MEM_UTIL}" \
+EMBEDDING_LORA_ADAPTER_DIR="${EMBEDDING_LORA_ADAPTER_DIR}" \
+EMBEDDING_LORA_MODEL="${EMBEDDING_LORA_MODEL}" \
+EMBEDDING_LORA_MAX_RANK="${EMBEDDING_LORA_MAX_RANK}" \
+GPU_MEMORY_UTILIZATION=0.40 \
 VLLM_EMBEDDING_PORT="${EMBEDDING_PORT}" \
 bash "${PROJECT_ROOT}/deploy/slurm_vllm_embedding_deploy.sh" &
 
@@ -572,60 +481,24 @@ wait_for_service \
     "${EMBED_PID}" \
     1800
 
-####################################################
-# Start query rewrite server on GPU 1
-#
-# IMPORTANT:
-# The DPO checkpoint is a LoRA adapter, not a full model (see adapter_config.json:
-# base_model_name_or_path=Qwen/Qwen3-8B), so this engine serves the base model with
-# --enable-lora and registers the adapter under REWRITE_MODEL as an additional
-# queryable "model" name on the SAME endpoint. Requests naming REWRITE_BASE_MODEL hit
-# the plain base model (used for the resolve stage); requests naming REWRITE_MODEL hit
-# the finetuned adapter (used for the rewrite stage).
-####################################################
+# /v1/models is up before the first LoRA forward, so exercise the adapter explicitly.
+curl -sf \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"${EMBEDDING_LORA_MODEL}\",\"input\":\"PORTS adapter health check\"}" \
+    "http://${HOST}:${EMBEDDING_PORT}/v1/embeddings" >/dev/null || {
+    echo "ERROR: Embedding LoRA adapter '${EMBEDDING_LORA_MODEL}' failed an embedding request." >&2
+    exit 1
+}
 
-echo ""
-echo "===================================================="
-echo "Starting query rewrite server on GPU 2"
-echo "===================================================="
-
-CUDA_VISIBLE_DEVICES=2 \
-HF_HOME="${HF_HOME}" \
-HF_HUB_CACHE="${HF_HUB_CACHE}" \
-HF_XET_CACHE="${HF_XET_CACHE}" \
-HF_HUB_DISABLE_XET=1 \
-vllm serve "${REWRITE_BASE_MODEL}" \
-    --served-model-name "${REWRITE_BASE_MODEL}" \
-    --enable-lora \
-    --max-lora-rank 16 \
-    --lora-modules "${REWRITE_MODEL}=${REWRITE_LORA_ADAPTER_DIR}" \
-    --dtype float16 \
-    --gpu-memory-utilization "${REWRITE_GPU_MEM_UTIL}" \
-    --max-model-len 2048 \
-    --max-num-seqs 4 \
-    --enforce-eager \
-    --host 0.0.0.0 \
-    --port "${REWRITE_PORT}" \
-    --download-dir "${HF_HUB_CACHE}" &
-
-REWRITE_PID=$!
-
-echo "Query rewrite server PID: ${REWRITE_PID}"
-
-wait_for_service \
-    "query rewrite server" \
-    "http://${HOST}:${REWRITE_PORT}/v1/models" \
-    "${REWRITE_PID}" \
-    1800
+echo "Embedding LoRA adapter answered an embedding request."
 
 ####################################################
 # Verify all model services
 ####################################################
 
 for service in \
-    "Laguna:${LAGUNA_PID}" \
-    "embedding server:${EMBED_PID}" \
-    "query rewrite server:${REWRITE_PID}"; do
+    "GPT-OSS:${GPT_PID}" \
+    "embedding server:${EMBED_PID}"; do
 
     service_name="${service%%:*}"
     service_pid="${service##*:}"
@@ -641,38 +514,9 @@ echo "All model servers are running."
 
 echo ""
 echo "GPU usage after model startup:"
-
 nvidia-smi \
     --query-gpu=index,name,memory.used,memory.free \
     --format=csv,noheader || true
-
-####################################################
-# Pre-warm embedding cache if needed
-####################################################
-
-EMBED_CACHE="${PROJECT_ROOT}/wild-tool-bench/wtb/model_handler/api_inference/tool_embeddings_cache_qwen3.json"
-
-if [[ ! -f "${EMBED_CACHE}" ]]; then
-
-    echo ""
-    echo "Embedding cache not found; pre-warming now..."
-
-    cd "${PROJECT_ROOT}/wild-tool-bench"
-
-    python wtb/model_handler/api_inference/setup_openai_embeddings.py \
-        --provider qwen3 \
-        --tools-file ../multi-agent-framework/tools/tools_en.jsonl
-
-    cd "${PROJECT_ROOT}"
-
-    echo "Embedding cache ready: ${EMBED_CACHE}"
-
-else
-
-    echo ""
-    echo "Embedding cache found: ${EMBED_CACHE}"
-
-fi
 
 ####################################################
 # Start LangGraph
@@ -687,8 +531,10 @@ cd "${BENCHMARK_ROOT}"
 
 source "${BENCH_VENV}/bin/activate"
 
-# Avoid a stale LangGraph instance from an earlier run.
-fuser -k "${LANGGRAPH_PORT}/tcp" 2>/dev/null || true
+# Benchmark results and server-side logs share this dir.
+RESULT_DIR="${RESULT_DIR:-result_v3_120B/embedding_context_ports_lora}"
+export LANGGRAPH_RESULT_DIR="${RESULT_DIR}"
+echo "Result dir: ${RESULT_DIR}"
 
 python -u -m wtb.model_handler.api_inference.langgraph_app &
 
@@ -705,42 +551,23 @@ echo "Waiting for LangGraph..."
 sleep 15
 
 if ! kill -0 "${LANGGRAPH_PID}" 2>/dev/null; then
-
     echo "ERROR: LangGraph exited during startup."
-
     wait "${LANGGRAPH_PID}" || true
-
     exit 1
-
 fi
 
 echo "LangGraph process is running."
 
 ####################################################
-# Final server checks
+# Final server check
 ####################################################
 
-curl -sf \
-    "http://${HOST}:${LAGUNA_PORT}/v1/models" \
-    >/dev/null || {
-
-    echo "ERROR: Laguna failed its final health check." >&2
+curl -sf "http://${HOST}:${GPT_PORT}/v1/models" >/dev/null || {
+    echo "ERROR: GPT-OSS failed its final health check." >&2
     exit 1
 }
-
-curl -sf \
-    "http://${HOST}:${EMBEDDING_PORT}/v1/models" \
-    >/dev/null || {
-
+curl -sf "http://${HOST}:${EMBEDDING_PORT}/v1/models" >/dev/null || {
     echo "ERROR: Embedding server failed its final health check." >&2
-    exit 1
-}
-
-curl -sf \
-    "http://${HOST}:${REWRITE_PORT}/v1/models" \
-    >/dev/null || {
-
-    echo "ERROR: Query rewrite server failed its final health check." >&2
     exit 1
 }
 
@@ -752,12 +579,12 @@ echo "All service health checks passed."
 
 echo ""
 echo "===================================================="
-echo "Running benchmark"
+echo "Running benchmark (PORTS LoRA embedding-context selector)"
 echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result/query_rewrite_dpo_lora_embedding_context \
+    --result-dir "${RESULT_DIR}" \
     --num-threads 1
 
 echo ""

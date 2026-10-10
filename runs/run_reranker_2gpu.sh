@@ -556,6 +556,11 @@ cd "${BENCHMARK_ROOT}"
 
 source "${BENCH_VENV}/bin/activate"
 
+# Benchmark results and server-side logs share this dir.
+RESULT_DIR="${RESULT_DIR:-result_v3_120B/reranker_context}"
+export LANGGRAPH_RESULT_DIR="${RESULT_DIR}"
+echo "Result dir: ${RESULT_DIR}"
+
 python -u -m wtb.model_handler.api_inference.langgraph_app &
 
 LANGGRAPH_PID=$!
@@ -608,7 +613,7 @@ echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result/reranker_context \
+    --result-dir "${RESULT_DIR}" \
     --num-threads 1
 
 echo ""

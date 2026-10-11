@@ -2752,6 +2752,24 @@ class Qwen3EmbeddingContextPortsLoraToolSelector(Qwen3EmbeddingContextBasedToolS
         self.strategy_name = "qwen3_embedding_context_ports_lora"
 
 
+class Qwen3EmbeddingPortsLoraToolSelector(Qwen3EmbeddingBasedToolSelector):
+    """Latest-query Qwen3 retrieval using the PORTS-trained embedding LoRA adapter."""
+
+    def __init__(self, top_k: int = 5, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        adapter_cache = cache_file or os.path.join(
+            os.path.dirname(__file__),
+            "tool_embeddings_cache_qwen3_ports_lora.json",
+        )
+        super().__init__(
+            top_k=top_k,
+            cache_file=adapter_cache,
+            tools_file=tools_file,
+            schema_cache_file=schema_cache_file,
+        )
+        self.strategy_name = "qwen3_embedding_ports_lora"
+
+
 class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedToolSelector):
     """Strategy: two-stage Qwen3-8B query rewriting in front of Qwen3-Embedding-8B (full context).
 
@@ -2831,6 +2849,7 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
                  tools_file: str = None, schema_cache_file: str = None):
         super().__init__(top_k=top_k, cache_file=cache_file, tools_file=tools_file,
                           schema_cache_file=schema_cache_file)
+        self.strategy_name = "qwen3_query_rewrite_embedding_context"
         self.rewrite_endpoint = os.getenv("QUERY_REWRITE_LLM_ENDPOINT")
         self.rewrite_api_key = os.getenv("QUERY_REWRITE_LLM_API_KEY", "EMPTY")
         self.rewrite_model = os.getenv("QUERY_REWRITE_LLM_MODEL", "Qwen/Qwen3-8B")
@@ -3095,6 +3114,37 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         )
         full_conversation = full_conversation[-2000:]
         return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {full_conversation}"
+
+
+class Qwen3QueryRewriteEmbeddingToolSelector(Qwen3QueryRewriteEmbeddingContextToolSelector):
+    """Strategy: query rewrite + Qwen3 embedding retrieval without the resolve pass.
+
+    This intentionally mirrors the existing Qwen3 query-rewrite embedding flow,
+    but drops the separate "resolve conversation context" stage and only rewrites
+    the newest user message to a retrieval-friendly query before embedding.
+    """
+
+    def __init__(self, top_k: int = 5, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        super().__init__(top_k=top_k, cache_file=cache_file, tools_file=tools_file,
+                          schema_cache_file=schema_cache_file)
+        self.strategy_name = "qwen3_query_rewrite_embedding"
+
+    def _extract_query(self, messages: list) -> str:
+        """Rewrite only the latest user message; do not resolve earlier context."""
+        conversation_parts = []
+        for msg in messages:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                conversation_parts.append((role, content))
+        if not conversation_parts:
+            return ""
+
+        _, current_query = conversation_parts[-1]
+        rewritten_query, rewrite_metrics = self._rewrite_query(current_query[:2000])
+        self.last_rewrite_metrics = rewrite_metrics
+        return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {rewritten_query}"
 
 
 class Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(Qwen3QueryRewriteEmbeddingContextToolSelector):
@@ -4216,8 +4266,12 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return Qwen3EmbeddingContextBasedToolSelector(top_k=5)
     elif mode == "qwen3_embedding_context_ports_lora":
         return Qwen3EmbeddingContextPortsLoraToolSelector(top_k=5)
+    elif mode == "qwen3_embedding_ports_lora":
+        return Qwen3EmbeddingPortsLoraToolSelector(top_k=5)
     elif mode == "qwen3_query_rewrite_embedding_context":
         return Qwen3QueryRewriteEmbeddingContextToolSelector(top_k=5)
+    elif mode == "qwen3_query_rewrite_embedding":
+        return Qwen3QueryRewriteEmbeddingToolSelector(top_k=5)
     elif mode == "qwen3_query_rewrite_dpo_lora_embedding_context":
         return Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(top_k=5)
     elif mode == "qwen3_embedding_reranker":
@@ -4426,7 +4480,8 @@ def run(host="127.0.0.1", port=8001):
     print(f"  3. 'embedding' - OpenAI text-embedding-3-small (cached)")
     print(f"  4. 'embedding_reranker' - Embeddings + LLM reranking")
     print(f"  5. 'qwen3_query_rewrite_embedding_context' - Qwen3-8B resolve+rewrite + Qwen3-Embedding-8B")
-    print(f"  5.1. 'qwen3_query_rewrite_dpo_lora_embedding_context' - same, rewrite stage via DPO LoRA adapter")
+    print(f"  5.1. 'qwen3_query_rewrite_embedding' - Qwen3-8B rewrite only + Qwen3-Embedding-8B (no resolve step)")
+    print(f"  5.2. 'qwen3_query_rewrite_dpo_lora_embedding_context' - same, rewrite stage via DPO LoRA adapter")
     print(f"\nOpenAI Embedding Configuration (for mode 'embedding'):")
     print(f"  OPENAI_API_KEY: {'***SET***' if os.getenv('OPENAI_API_KEY') else 'NOT SET'}")
     print(f"  OPENAI_BASE_URL: {os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}")

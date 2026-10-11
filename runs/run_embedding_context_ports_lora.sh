@@ -191,7 +191,7 @@ update_env_variable \
 
 update_env_variable \
     "LANGGRAPH_TOOL_SELECTION_MODE" \
-    "qwen3_embedding_context_ports_lora" \
+    "qwen3_embedding_ports_lora" \
     "${ENV_FILE}"
 
 echo ""
@@ -532,7 +532,7 @@ cd "${BENCHMARK_ROOT}"
 source "${BENCH_VENV}/bin/activate"
 
 # Benchmark results and server-side logs share this dir.
-RESULT_DIR="${RESULT_DIR:-result_v3_120B/embedding_context_ports_lora}"
+RESULT_DIR="${RESULT_DIR:-result_v3_120B/embedding_ports_lora}"
 export LANGGRAPH_RESULT_DIR="${RESULT_DIR}"
 echo "Result dir: ${RESULT_DIR}"
 
@@ -579,7 +579,7 @@ echo "All service health checks passed."
 
 echo ""
 echo "===================================================="
-echo "Running benchmark (PORTS LoRA embedding-context selector)"
+echo "Running benchmark (PORTS LoRA query-only embedding selector)"
 echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \

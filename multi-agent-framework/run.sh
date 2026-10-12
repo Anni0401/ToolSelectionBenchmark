@@ -21,9 +21,9 @@ VAL_RATIO="${VAL_RATIO:-0.2}"
 MIN_SCORE_MARGIN="${MIN_SCORE_MARGIN:-0.0}"  # full dataset, no score-diff filtering
 GROUP_BY="${GROUP_BY:-gold_tools}"
 SEED="${SEED:-42}"
-LORA_R="${LORA_R:-16}"
+LORA_R="${LORA_R:-8}"
 LORA_ALPHA="${LORA_ALPHA:-32}"
-LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
+LORA_DROPOUT="${LORA_DROPOUT:-0.0}"
 
 
 export WANDB_ENTITY=herrmann-ann-kathrin-universit-t-mannheim

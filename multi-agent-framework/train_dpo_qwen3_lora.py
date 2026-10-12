@@ -119,9 +119,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
-    parser.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
+    parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
-    parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
+    parser.add_argument("--lora-dropout", type=float, default=0.0, help="LoRA dropout")
 
     parser.add_argument(
         "--target-modules",

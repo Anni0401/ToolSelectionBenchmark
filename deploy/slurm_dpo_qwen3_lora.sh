@@ -107,9 +107,9 @@ python -u "${PROJECT_ROOT}/multi-agent-framework/train_dpo_qwen3_lora.py" \
     --min-score-margin "${MIN_SCORE_MARGIN}" \
     --group-by gold_tools \
     --seed "${SEED}" \
-    --lora-r 16 \
+    --lora-r 8 \
     --lora-alpha 32 \
-    --lora-dropout 0.05 \
+    --lora-dropout 0.0 \
     --gradient-checkpointing \
     --bf16 \
     --logging-steps 1 \

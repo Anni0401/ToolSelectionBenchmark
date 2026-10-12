@@ -652,6 +652,11 @@ cd "${BENCHMARK_ROOT}"
 
 source "${BENCH_VENV}/bin/activate"
 
+# Keep benchmark results and server-side logs together.
+RESULT_DIR="${RESULT_DIR:-results_laguna/query_rewrite_embedding_context}"
+export LANGGRAPH_RESULT_DIR="${RESULT_DIR}"
+echo "Result dir: ${RESULT_DIR}"
+
 # Avoid a stale LangGraph instance from an earlier run.
 fuser -k "${LANGGRAPH_PORT}/tcp" 2>/dev/null || true
 
@@ -722,7 +727,7 @@ echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result_laguna/query_rewrite_embedding_context \
+    --result-dir "${RESULT_DIR}" \
     --num-threads 1
 
 echo ""

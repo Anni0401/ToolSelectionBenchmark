@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
-Build gold tool set by:
-1. Deduplicating originals by normalized_tool_id (keep first occurrence), synthetics by name
-2. Cap synthetic tools to at most 2 per source normalized_tool_id (keep first occurrences)
-3. Remove synthetic tools with exact name match to originals
-4. Remove synthetic tools >0.75 similar to unrelated originals
-5. Remove synthetic tool pairs >0.9 similar from different parents
-
+Build gold tool set
 Originals are expected to carry a `normalized_tool_id` field (see
 tools_en_with_normalized_tool_ids.jsonl) and synthetics carry `_source_tool_id`
 pointing at the normalized_tool_id of the original they were generated from.
@@ -108,10 +102,7 @@ def cosine_similarity(vec1, vec2):
 
 def filter_gold_tools(originals, synthetics, neighbors_csv, model_name, output_dir="analysis_embeddings"):
     """
-    Apply filtering rules:
-    2. Remove synthetic tools with exact name match to originals
-    3. Remove synthetic tools >0.75 similar to unrelated originals
-    4. Remove synthetic tool pairs >0.9 similar from different parents
+    Apply filtering rules
     """
     
     output_dir = Path(output_dir)

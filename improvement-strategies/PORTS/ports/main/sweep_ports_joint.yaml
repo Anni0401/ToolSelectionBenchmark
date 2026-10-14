@@ -1,0 +1,43 @@
+# Joint W&B Bayes sweep for PORTS training and LoRA hyperparameters.
+# Run from the ports/main directory:
+#   wandb sweep sweep_ports_joint.yaml
+# Then start an agent with an explicit 30-run budget:
+#   sbatch scripts/slurm_wandb_sweep_agent.sh <ENTITY/PROJECT/SWEEP_ID> 30
+# Request at least 30 runs; the higher cap leaves room for additional attempts.
+# The baseline from the previous PORTS and LoRA sweeps is represented in the
+# search space: lr=1e-6, n_epochs=2, lambda_loss=0.3, beta=0.5, gamma=1.0,
+# gradient_accumulation_steps=32, lora_r=16, lora_alpha=32, lora_dropout=0.05.
+# Start a fresh sweep for each DATASET_NAME; the training wrapper defaults to bfcl.
+
+program: scripts/train_ports_sweep.sh
+method: bayes
+metric:
+  name: eval/cosine_ndcg_at_5
+  goal: maximize
+run_cap: 48
+parameters:
+  lr:
+    values: [0.000001, 0.000005, 0.00001]
+  n_epochs:
+    values: [2, 5]
+  lambda_loss:
+    values: [0.1, 0.3, 0.5]
+  beta:
+    values: [0.5, 1.0]
+  gamma:
+    values: [0.5, 1.0]
+  train_batch_size:
+    value: 2
+  gradient_accumulation_steps:
+    values: [12, 32]
+  lora_r:
+    values: [8, 16, 32, 64]
+  lora_alpha:
+    values: [16, 32, 64, 128]
+  lora_dropout:
+    values: [0.0, 0.05, 0.1]
+command:
+  - ${env}
+  - bash
+  - ${program}
+  - ${args}

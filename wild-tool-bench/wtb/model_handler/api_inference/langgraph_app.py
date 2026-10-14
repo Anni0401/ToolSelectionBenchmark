@@ -3152,7 +3152,7 @@ class Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(Qwen3QueryRewriteEmbe
     the stage-2 rewrite is produced by the DPO-finetuned LoRA adapter trained in
     multi-agent-framework/train_dpo_qwen3_lora.py instead of the base Qwen3-8B model.
 
-    Adapter storage (multi-agent-framework/qwen3-8b-dpo-lora-final/final/): only LoRA
+    Adapter storage (multi-agent-framework/qwen3-8b-dpo-lora/final/): only LoRA
     weights are saved there (adapter_config.json + adapter_model.safetensors, ~few hundred
     MB), not a full checkpoint. adapter_config.json pins
     ``base_model_name_or_path: "Qwen/Qwen3-8B"``, so this is not a standalone model -- it
@@ -3162,7 +3162,7 @@ class Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(Qwen3QueryRewriteEmbe
         python -m vllm.entrypoints.openai.api_server \\
             --model Qwen/Qwen3-8B \\
             --enable-lora --max-lora-rank 16 \\
-            --lora-modules qwen3-8b-dpo-lora=/path/to/qwen3-8b-dpo-lora-final/final \\
+                                         --lora-modules qwen3-8b-dpo-lora=/path/to/qwen3-8b-dpo-lora/final \\
             --port 8004
 
     and then request completions with ``"model": "qwen3-8b-dpo-lora"`` (the name given in
@@ -3308,6 +3308,32 @@ class Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(Qwen3QueryRewriteEmbe
         log_query_rewrite(resolved_query, rewritten, self.dpo_rewrite_model, stage_metrics, stage="rewrite")
 
         return rewritten, stage_metrics
+
+
+class Qwen3QueryRewriteDpoLoraEmbeddingToolSelector(Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector):
+    """Rewrite only the latest request with the DPO adapter before embedding retrieval."""
+
+    def __init__(self, top_k: int = 5, cache_file: str = None,
+                 tools_file: str = None, schema_cache_file: str = None):
+        super().__init__(top_k=top_k, cache_file=cache_file, tools_file=tools_file,
+                         schema_cache_file=schema_cache_file)
+        self.strategy_name = "qwen3_query_rewrite_dpo_lora_embedding"
+
+    def _extract_query(self, messages: list) -> str:
+        """Rewrite the latest message without resolving earlier conversation turns."""
+        conversation_parts = []
+        for msg in messages:
+            role = msg.get("role", "").upper()
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                conversation_parts.append((role, content))
+        if not conversation_parts:
+            return ""
+
+        _, current_query = conversation_parts[-1]
+        rewritten_query, rewrite_metrics = self._rewrite_query(current_query[:2000])
+        self.last_rewrite_metrics = rewrite_metrics
+        return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {rewritten_query}"
 
 
 class Qwen3EmbeddingWithLLMRerankerToolSelector(OpenAIEmbeddingWithLLMRerankerToolSelector):
@@ -4274,6 +4300,8 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return Qwen3QueryRewriteEmbeddingToolSelector(top_k=5)
     elif mode == "qwen3_query_rewrite_dpo_lora_embedding_context":
         return Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(top_k=5)
+    elif mode == "qwen3_query_rewrite_dpo_lora_embedding":
+        return Qwen3QueryRewriteDpoLoraEmbeddingToolSelector(top_k=5)
     elif mode == "qwen3_embedding_reranker":
         return Qwen3EmbeddingWithLLMRerankerToolSelector(top_k=5, initial_k=10)
     elif mode == "qwen3_embedding_context_reranker":
@@ -4482,6 +4510,7 @@ def run(host="127.0.0.1", port=8001):
     print(f"  5. 'qwen3_query_rewrite_embedding_context' - Qwen3-8B resolve+rewrite + Qwen3-Embedding-8B")
     print(f"  5.1. 'qwen3_query_rewrite_embedding' - Qwen3-8B rewrite only + Qwen3-Embedding-8B (no resolve step)")
     print(f"  5.2. 'qwen3_query_rewrite_dpo_lora_embedding_context' - same, rewrite stage via DPO LoRA adapter")
+    print(f"  5.3. 'qwen3_query_rewrite_dpo_lora_embedding' - DPO LoRA rewrite only + Qwen3-Embedding-8B (no resolve step)")
     print(f"\nOpenAI Embedding Configuration (for mode 'embedding'):")
     print(f"  OPENAI_API_KEY: {'***SET***' if os.getenv('OPENAI_API_KEY') else 'NOT SET'}")
     print(f"  OPENAI_BASE_URL: {os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}")

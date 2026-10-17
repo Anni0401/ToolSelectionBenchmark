@@ -269,10 +269,9 @@ class OracleToolSelector(ToolSelector):
     """
     Oracle baseline:
 
-    Always pass exactly the tools supplied by WTB for the current task
-    (i.e. the gold/ground-truth tool set), with no synthetic distractors
-    added and no filtering/selection logic applied. This gives an upper
-    bound on executor performance when tool selection is perfect.
+    Pass only WTB tools named by the gold action(s) at the current task step,
+    with no synthetic distractors. This gives an upper bound on executor
+    performance when tool selection is perfect.
     """
 
     @staticmethod
@@ -301,13 +300,20 @@ class OracleToolSelector(ToolSelector):
             },
         }
 
-    def select(self, messages: list, tools: list) -> list:
-        """Return the WTB gold tools for this task, unmodified and unfiltered."""
+    def select(
+        self,
+        messages: list,
+        tools: list,
+        gold_action_tool_names: Optional[list] = None,
+    ) -> list:
+        """Return only WTB tools required by the current gold action step."""
         gold_tools = []
+        allowed_names = set(gold_action_tool_names or [])
 
         for tool in tools or []:
             clean_tool = self._sanitize_tool(tool)
-            if clean_tool is not None:
+            tool_name = clean_tool["function"]["name"] if clean_tool else None
+            if clean_tool is not None and tool_name in allowed_names:
                 gold_tools.append(clean_tool)
 
         query = ""
@@ -323,7 +329,10 @@ class OracleToolSelector(ToolSelector):
             query=query,
             available_tools_count=len(gold_tools),
             selected_tools=gold_tools,
-            selection_metadata={"method": "wtb_gold_tools_only"},
+            selection_metadata={
+                "method": "wtb_current_gold_action_tools",
+                "gold_action_tool_names": sorted(allowed_names),
+            },
         )
 
         print("\n[ORACLE SELECTOR]")
@@ -2731,27 +2740,6 @@ class Qwen3EmbeddingContextBasedToolSelector(Qwen3EmbeddingBasedToolSelector):
         return f"Instruct: {self.TASK_INSTRUCTION}\nQuery: {full_conversation}"
 
 
-class Qwen3EmbeddingContextPortsLoraToolSelector(Qwen3EmbeddingContextBasedToolSelector):
-    """Full-context Qwen3 retrieval using the PORTS-trained embedding LoRA adapter."""
-
-    def __init__(self, top_k: int = 5, cache_file: str = None,
-                 tools_file: str = None, schema_cache_file: str = None):
-        adapter_cache = cache_file or os.path.join(
-            os.path.dirname(__file__),
-            "tool_embeddings_cache_qwen3_ports_lora.json",
-        )
-        super().__init__(
-            top_k=top_k,
-            cache_file=adapter_cache,
-            tools_file=tools_file,
-            schema_cache_file=schema_cache_file,
-        )
-        self.model = os.getenv(
-            "QWEN3_EMBEDDING_MODEL", "qwen3-embedding-8b-ports-lora"
-        )
-        self.strategy_name = "qwen3_embedding_context_ports_lora"
-
-
 class Qwen3EmbeddingPortsLoraToolSelector(Qwen3EmbeddingBasedToolSelector):
     """Latest-query Qwen3 retrieval using the PORTS-trained embedding LoRA adapter."""
 
@@ -4135,6 +4123,18 @@ def _get_vllm_template_kwargs(model_name: str | None = None) -> dict:
     return {}
 
 
+def _use_server_sampling(model_name: str | None = None) -> bool:
+    """True if temperature/top_p should come from the server's generation_config.json.
+
+    EXECUTING_LLM_SAMPLING=server|greedy overrides; default is server for Laguna/Poolside.
+    """
+    mode = os.getenv("EXECUTING_LLM_SAMPLING", "").strip().lower()
+    if mode in ("server", "greedy"):
+        return mode == "server"
+    model_l = (model_name or "").lower()
+    return "poolside" in model_l or "laguna" in model_l
+
+
 def _invoke_llm(messages: list, tools: list = None):
     """Invoke a local OpenAI/vLLM-compatible endpoint.
     
@@ -4169,9 +4169,13 @@ def _invoke_llm(messages: list, tools: list = None):
     payload = {
         "messages": messages_to_send,
         "model": model,
-        "temperature": 0.0,
-        "top_p": 1.0,
     }
+    if not _use_server_sampling(model):
+        payload["temperature"] = 0.0
+        payload["top_p"] = 1.0
+    seed = os.getenv("EXECUTING_LLM_SEED")
+    if seed:
+        payload["seed"] = int(seed)
     if template_kwargs:
         payload["chat_template_kwargs"] = template_kwargs
     
@@ -4290,8 +4294,6 @@ def _create_tool_selector(mode: str) -> ToolSelector:
         return Qwen3EmbeddingBasedToolSelector(top_k=5)
     elif mode == "qwen3_embedding_context":
         return Qwen3EmbeddingContextBasedToolSelector(top_k=5)
-    elif mode == "qwen3_embedding_context_ports_lora":
-        return Qwen3EmbeddingContextPortsLoraToolSelector(top_k=5)
     elif mode == "qwen3_embedding_ports_lora":
         return Qwen3EmbeddingPortsLoraToolSelector(top_k=5)
     elif mode == "qwen3_query_rewrite_embedding_context":
@@ -4328,6 +4330,7 @@ def _build_graph(mode: str = "in_context"):
     class GraphState(TypedDict):
         messages: list
         tools: list
+        gold_action_tool_names: list
         selected_tools: list
         response: str
         tool_calls: list
@@ -4343,7 +4346,14 @@ def _build_graph(mode: str = "in_context"):
         """Node 1: Select relevant tools based on strategy."""
         messages = state.get("messages", [])
         tools = state.get("tools", [])
-        selected = selector.select(messages, tools)
+        if isinstance(selector, OracleToolSelector):
+            selected = selector.select(
+                messages,
+                tools,
+                state.get("gold_action_tool_names"),
+            )
+        else:
+            selected = selector.select(messages, tools)
         metrics = getattr(selector, "last_selection_metrics", None)
         if not metrics and hasattr(selector, "embedding_selector"):
             metrics = getattr(selector.embedding_selector, "last_selection_metrics", {})
@@ -4407,6 +4417,7 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
         inp = payload.get("input", {})
         messages = inp.get("messages", [])
         tools = inp.get("tools", [])
+        gold_action_tool_names = inp.get("gold_action_tool_names")
         
         # Support selection_mode in payload (can override default)
         selection_mode = payload.get("selection_mode") or inp.get("selection_mode") or _default_mode
@@ -4442,6 +4453,7 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
                 result = graph.invoke({
                         "messages": messages,
                         "tools": tools,
+                        "gold_action_tool_names": gold_action_tool_names,
                         "selected_tools": [],
                         "response": "",
                         "tool_calls": [],
@@ -4465,6 +4477,12 @@ class LangGraphLocalHandler(BaseHTTPRequestHandler):
                     selection_metrics = {}
             else:
                 # Fallback: invoke LLM directly if graph not available
+                if selection_mode == "oracle":
+                    tools = OracleToolSelector().select(
+                        messages,
+                        tools,
+                        gold_action_tool_names,
+                    )
                 content, tool_calls, input_tokens, output_tokens = _invoke_llm(messages, tools)
         except Exception as exc:
             import traceback

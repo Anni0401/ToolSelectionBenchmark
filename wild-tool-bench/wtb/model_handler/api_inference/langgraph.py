@@ -32,13 +32,27 @@ class LangGraphHandler(BaseHandler):
         tools = inference_data["tools"]
         test_entry_id = inference_data.get("test_entry_id")
         task_idx = inference_data.get("task_idx")
+        gold_action_tool_names = inference_data.get("gold_action_tool_names")
 
-        payload = self._build_langgraph_payload(messages, tools, test_entry_id=test_entry_id, task_idx=task_idx)
+        payload = self._build_langgraph_payload(
+            messages,
+            tools,
+            test_entry_id=test_entry_id,
+            task_idx=task_idx,
+            gold_action_tool_names=gold_action_tool_names,
+        )
         api_response, latency = self._send_langgraph_request(payload)
 
         return api_response, latency
 
-    def _build_langgraph_payload(self, messages, tools, test_entry_id=None, task_idx=None):
+    def _build_langgraph_payload(
+        self,
+        messages,
+        tools,
+        test_entry_id=None,
+        task_idx=None,
+        gold_action_tool_names=None,
+    ):
         """Build the LangGraph execution payload.
 
         Supports configurable tool selection strategy:
@@ -55,6 +69,8 @@ class LangGraphHandler(BaseHandler):
             },
             "selection_mode": self.selection_mode,
         }
+        if gold_action_tool_names is not None:
+            payload["input"]["gold_action_tool_names"] = gold_action_tool_names
         if test_entry_id is not None:
             payload["test_entry_id"] = test_entry_id
         if task_idx is not None:

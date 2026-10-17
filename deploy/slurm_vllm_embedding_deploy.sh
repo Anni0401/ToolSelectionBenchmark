@@ -78,7 +78,7 @@ PYTHON_EOF
         --lora-modules "${EMBEDDING_LORA_MODEL}=${EMBEDDING_LORA_ADAPTER_DIR}"
     )
     SERVED_EMBEDDING_MODEL="${EMBEDDING_LORA_MODEL}"
-    SERVED_SELECTION_MODE="qwen3_embedding_context_ports_lora"
+    SERVED_SELECTION_MODE="qwen3_embedding_ports_lora"
 else
     SERVED_SELECTION_MODE="qwen3_embedding"
 fi

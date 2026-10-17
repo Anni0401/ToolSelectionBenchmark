@@ -97,7 +97,9 @@ REWRITE_BASE_MODEL="${REWRITE_BASE_MODEL:-Qwen/Qwen3-8B}"
 # Served-model-name the DPO LoRA adapter is registered under on that same vLLM engine.
 REWRITE_MODEL="${REWRITE_MODEL:-qwen3-8b-dpo-lora}"
 # Local PEFT/LoRA adapter dir (base_model_name_or_path=Qwen/Qwen3-8B) produced by train_dpo_qwen3_lora.py.
-REWRITE_LORA_ADAPTER_DIR="${REWRITE_LORA_ADAPTER_DIR:-${PROJECT_ROOT}/multi-agent-framework/qwen3-8b-dpo-lora-final/final}"
+REWRITE_LORA_ADAPTER_DIR="${REWRITE_LORA_ADAPTER_DIR:-${PROJECT_ROOT}/multi-agent-framework/qwen3-8b-dpo-lora/final}"
+DPO_SELECTION_MODE="${DPO_SELECTION_MODE:-qwen3_query_rewrite_dpo_lora_embedding_context}"
+DPO_RESULT_DIR="${DPO_RESULT_DIR:-result_laguna/query_rewrite_dpo_lora_embedding_context}"
 
 LAGUNA_PORT="${LAGUNA_PORT:-8000}"
 EMBEDDING_PORT="${EMBEDDING_PORT:-8002}"
@@ -255,7 +257,7 @@ update_env_variable \
 
 update_env_variable \
     "LANGGRAPH_TOOL_SELECTION_MODE" \
-    "qwen3_query_rewrite_dpo_lora_embedding_context" \
+    "${DPO_SELECTION_MODE}" \
     "${ENV_FILE}"
 
 update_env_variable \
@@ -757,7 +759,7 @@ echo "===================================================="
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result/query_rewrite_dpo_lora_embedding_context \
+    --result-dir "${DPO_RESULT_DIR}" \
     --num-threads 1
 
 echo ""

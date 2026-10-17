@@ -653,7 +653,7 @@ cd "${BENCHMARK_ROOT}"
 source "${BENCH_VENV}/bin/activate"
 
 # Keep benchmark results and server-side logs together.
-RESULT_DIR="${RESULT_DIR:-results_laguna/query_rewrite_embedding_context}"
+RESULT_DIR="${RESULT_DIR:-result_laguna/query_rewrite_embedding_context}"
 export LANGGRAPH_RESULT_DIR="${RESULT_DIR}"
 echo "Result dir: ${RESULT_DIR}"
 

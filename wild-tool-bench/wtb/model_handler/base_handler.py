@@ -230,6 +230,11 @@ class BaseHandler:
             print(
                 f"ID: {test_entry_id.replace('wild_tool_bench_', '')}, Task: {task_idx}, Step: {step}", flush=True
             )
+            inference_data["gold_action_tool_names"] = sorted({
+                function_name
+                for action_group in tool_call_graph.step_to_function_name_list.get(step, [])
+                for function_name in action_group
+            })
             # print(f"Output：", flush=True)
             # for message in messages:
             #     print(json.dumps(message, ensure_ascii=False, indent=4) + "\n", flush=True)

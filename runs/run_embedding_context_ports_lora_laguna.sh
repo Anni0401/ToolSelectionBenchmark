@@ -93,7 +93,7 @@ EMBEDDING_MODEL="${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}"
 # Served-model-name the PORTS LoRA adapter is registered under on the embedding engine.
 EMBEDDING_LORA_MODEL="${EMBEDDING_LORA_MODEL:-qwen3-embedding-8b-ports-lora}"
 # PEFT adapter dir (base_model_name_or_path=Qwen/Qwen3-Embedding-8B) produced by PORTS training.
-EMBEDDING_LORA_ADAPTER_DIR="${EMBEDDING_LORA_ADAPTER_DIR:-${WORK}/ports/main/output/ports/ports_retriever_20261006_233629/checkpoint-epoch-2}"
+EMBEDDING_LORA_ADAPTER_DIR="${EMBEDDING_LORA_ADAPTER_DIR:-${WORK}/ports/main/output/ports/ports_retriever_20261015_164652/checkpoint-epoch-2}"
 EMBEDDING_LORA_MAX_RANK="${EMBEDDING_LORA_MAX_RANK:-16}"
 
 LAGUNA_PORT="${LAGUNA_PORT:-8000}"
@@ -217,7 +217,7 @@ update_env_variable \
 
 update_env_variable \
     "LANGGRAPH_TOOL_SELECTION_MODE" \
-    "qwen3_embedding_context_ports_lora" \
+    "qwen3_embedding_ports_lora" \
     "${ENV_FILE}"
 
 echo ""

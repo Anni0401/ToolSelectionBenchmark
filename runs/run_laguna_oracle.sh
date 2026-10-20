@@ -13,6 +13,23 @@
 
 set -Eeuo pipefail
 
+# Usage: sbatch run_laguna_oracle.sh [--seed N] [--greedy]
+SEED=""
+GREEDY=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --greedy) GREEDY=1; shift ;;
+        --seed) SEED="${2:?--seed requires a value}"; shift 2 ;;
+        --seed=*) SEED="${1#--seed=}"; shift ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [[ -n "${SEED}" && ! "${SEED}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --seed must be a non-negative integer" >&2
+    exit 1
+fi
+
 
 ####################################################
 # Paths and environment
@@ -339,6 +356,21 @@ update_env_variable \
     "http://127.0.0.1:${LANGGRAPH_PORT}/execute" \
     "${ENV_FILE}"
 
+if [[ "${GREEDY}" == 1 ]]; then
+    # temperature=0.0, top_p=1.0 instead of the server's generation_config.json.
+    update_env_variable "EXECUTING_LLM_SAMPLING" "greedy" "${ENV_FILE}"
+else
+    sed -i "/^EXECUTING_LLM_SAMPLING=/d" "${ENV_FILE}"
+fi
+
+if [[ -n "${SEED}" ]]; then
+    update_env_variable "EXECUTING_LLM_SEED" "${SEED}" "${ENV_FILE}"
+    RESULT_DIR="result_laguna/oracle_seed${SEED}"
+else
+    sed -i "/^EXECUTING_LLM_SEED=/d" "${ENV_FILE}"
+    RESULT_DIR="result_laguna/oracle"
+fi
+
 echo "Updated ${ENV_FILE}"
 
 
@@ -467,7 +499,7 @@ echo "Tool selection mode:  oracle"
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result_laguna/oracle \
+    --result-dir "${RESULT_DIR}" \
     --num-threads 1
 
 

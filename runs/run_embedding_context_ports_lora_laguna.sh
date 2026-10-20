@@ -570,7 +570,7 @@ cd "${BENCHMARK_ROOT}"
 source "${BENCH_VENV}/bin/activate"
 
 # Benchmark results and server-side logs share this dir.
-RESULT_DIR="${RESULT_DIR:-result_laguna/embedding_context_ports_lora}"
+RESULT_DIR="${RESULT_DIR:-result_laguna/embedding_ports_lora}"
 export LANGGRAPH_RESULT_DIR="${RESULT_DIR}"
 echo "Result dir: ${RESULT_DIR}"
 

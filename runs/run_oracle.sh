@@ -12,6 +12,21 @@
 
 set -euo pipefail
 
+# Usage: sbatch run_oracle.sh [--seed N]
+SEED=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --seed) SEED="${2:?--seed requires a value}"; shift 2 ;;
+        --seed=*) SEED="${1#--seed=}"; shift ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [[ -n "${SEED}" && ! "${SEED}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --seed must be a non-negative integer" >&2
+    exit 1
+fi
+
 ####################################################
 # Determine project root
 ####################################################
@@ -80,6 +95,16 @@ update_env_variable "EXECUTING_LLM_MODEL" "openai/gpt-oss-120b" "${ENV_FILE}"
 update_env_variable "EXECUTING_LLM_API_KEY" "EMPTY" "${ENV_FILE}"
 update_env_variable "EXECUTING_LLM_TOOL_CALL_PARSER" "auto" "${ENV_FILE}"
 update_env_variable "LANGGRAPH_TOOL_SELECTION_MODE" "oracle" "${ENV_FILE}"
+
+if [[ -n "${SEED}" ]]; then
+    # Greedy decoding ignores the seed, so sample with the server's settings.
+    update_env_variable "EXECUTING_LLM_SEED" "${SEED}" "${ENV_FILE}"
+    update_env_variable "EXECUTING_LLM_SAMPLING" "server" "${ENV_FILE}"
+    RESULT_DIR="result_120B_v2/oracle_seed${SEED}"
+else
+    sed -i "/^EXECUTING_LLM_SEED=/d;/^EXECUTING_LLM_SAMPLING=/d" "${ENV_FILE}"
+    RESULT_DIR="result_120B_v2/oracle"
+fi
 
 echo "Updated ${ENV_FILE}"
 
@@ -179,7 +204,7 @@ echo "Tool selection mode: oracle (gold WTB tools only, no distractors)"
 
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result_120B_v2/oracle \
+    --result-dir "${RESULT_DIR}" \
     --num-threads 1
 
 echo ""

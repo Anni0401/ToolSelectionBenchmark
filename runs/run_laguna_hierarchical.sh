@@ -164,6 +164,11 @@ update_env_variable \
     "${ENV_FILE}"
 
 update_env_variable \
+    "EXECUTING_LLM_SAMPLING" \
+    "greedy" \
+    "${ENV_FILE}"
+
+update_env_variable \
     "LANGGRAPH_SELECTOR_LLM_ENDPOINT" \
     "http://${HOST}:${SELECTOR_PORT}/v1/chat/completions" \
     "${ENV_FILE}"

@@ -758,7 +758,7 @@ class HierarchicalToolSelector(ToolSelector):
         self.endpoint = os.getenv("LANGGRAPH_SELECTOR_LLM_ENDPOINT")
         self.api_key = os.getenv("LANGGRAPH_SELECTOR_LLM_API_KEY")
         self.model = os.getenv("LANGGRAPH_SELECTOR_LLM_MODEL", "Qwen/Qwen3-30B-A3B")
-        self.max_output_tokens = int(os.getenv("LANGGRAPH_SELECTOR_MAX_OUTPUT_TOKENS", "400"))
+        self.max_output_tokens = int(os.getenv("LANGGRAPH_SELECTOR_MAX_OUTPUT_TOKENS", "800"))
         self.last_selection_metrics = {}
         self.schema_cache_file = schema_cache_file or os.path.join(
             os.path.dirname(__file__),
@@ -937,7 +937,7 @@ class HierarchicalToolSelector(ToolSelector):
         selected = []
         seen = set()
 
-        for spec in selected_specs[:10]:
+        for spec in selected_specs:
             name = str(spec.get("name", "")).strip()
             desc_hint = self._normalize_text(spec.get("description", ""))
             if not name:
@@ -1077,8 +1077,10 @@ class HierarchicalToolSelector(ToolSelector):
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
-            "top_p": 1.0,
+            "temperature": 0.7,
+            "top_p": 0.8,
+            "top_k": 20,
+            "min_p": 0.0,
             "max_tokens": self.max_output_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }
@@ -2976,8 +2978,10 @@ class Qwen3QueryRewriteEmbeddingContextToolSelector(Qwen3EmbeddingContextBasedTo
         payload = {
             "model": self.rewrite_model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
-            "top_p": 1.0,
+            "temperature": 0.7,
+            "top_p": 0.8,
+            "top_k": 20,
+            "min_p": 0,
             "max_tokens": max_output_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }

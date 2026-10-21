@@ -1,0 +1,14 @@
+{
+  "train_runtime": 852.0559,
+  "train_samples_per_second": 2.091,
+  "train_steps_per_second": 0.066,
+  "total_flos": 1.179045222585262e+17,
+  "train_loss": 0.6834948297057833,
+  "epoch": 2.0,
+  "kept_pairs": 1114,
+  "train_pairs": 891,
+  "val_pairs": 223,
+  "beta": 0.05,
+  "learning_rate": 1e-05,
+  "epochs": 2.0
+}

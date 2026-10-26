@@ -31,8 +31,8 @@ echo "===================================================="
 
 if [ ! -d "${PROJECT_ROOT}/.venv" ]; then
     echo "ERROR: ${PROJECT_ROOT}/.venv does not exist."
-    echo "Create it first with:"
-    echo "  bash deploy/uv_setup.sh --vllm"
+    echo "Create it first and install vLLM into it:"
+    echo "  uv venv && uv pip install vllm"
     exit 1
 fi
 

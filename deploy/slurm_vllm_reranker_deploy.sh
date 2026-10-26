@@ -16,7 +16,7 @@ if [[ -f "${VENV_DIR}/bin/activate" ]]; then
     echo "[INFO] Activated uv venv: ${VENV_DIR}"
 else
     echo "[ERROR] Virtual environment not found at ${VENV_DIR}."
-    echo "        Run 'bash deploy/uv_setup.sh --vllm' first."
+    echo "        Create it first and install vLLM into it (e.g. 'uv venv && uv pip install vllm')."
     exit 1
 fi
 

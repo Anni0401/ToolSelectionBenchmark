@@ -29,7 +29,7 @@ echo "===================================================="
 
 if [ ! -d "${PROJECT_ROOT}/.venv" ]; then
     echo "ERROR: ${PROJECT_ROOT}/.venv not found."
-    echo "Create it first with: bash deploy/uv_setup.sh --vllm"
+    echo "Create it first and install vLLM into it (e.g. 'uv venv && uv pip install vllm')."
     exit 1
 fi
 

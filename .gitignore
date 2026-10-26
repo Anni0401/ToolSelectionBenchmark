@@ -15,3 +15,20 @@ wild-tool-bench/result/in_context/tool_selection_logs.jsonlwild-tool-bench/resul
 analysis_embeddings/tools_en_all_neighbors.csv
 wild-tool-bench/result/in_context/tool_selection_logs.jsonl
 wild-tool-bench/Archive/
+
+# improvement-strategies: weights, checkpoints and run artifacts are published on HuggingFace / kept outside git
+improvement-strategies/**/.env
+improvement-strategies/**/wandb/
+improvement-strategies/**/checkpoint-*/
+improvement-strategies/**/*.safetensors
+improvement-strategies/**/*.pt
+improvement-strategies/**/*.pth
+improvement-strategies/**/*.bin
+improvement-strategies/**/*.err
+improvement-strategies/**/*.out
+improvement-strategies/dpo-query-rewrite/outputs/**/final/
+improvement-strategies/dpo-query-rewrite/sweeps/run_*/
+improvement-strategies/dpo-query-rewrite/sweeps/baseline_*/
+improvement-strategies/dpo-query-rewrite/sweeps/dpo_*/
+multi-agent-framework/wandb/
+wild-tool-bench/wtb/model_handler/api_inference/*.bak

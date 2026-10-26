@@ -3142,9 +3142,10 @@ class Qwen3QueryRewriteEmbeddingToolSelector(Qwen3QueryRewriteEmbeddingContextTo
 class Qwen3QueryRewriteDpoLoraEmbeddingContextToolSelector(Qwen3QueryRewriteEmbeddingContextToolSelector):
     """Strategy: same two-stage pipeline as Qwen3QueryRewriteEmbeddingContextToolSelector, but
     the stage-2 rewrite is produced by the DPO-finetuned LoRA adapter trained in
-    multi-agent-framework/train_dpo_qwen3_lora.py instead of the base Qwen3-8B model.
+    improvement-strategies/dpo-query-rewrite/train_dpo_qwen3_lora.py instead of the base Qwen3-8B model.
 
-    Adapter storage (multi-agent-framework/qwen3-8b-dpo-lora/final/): only LoRA
+    Adapter storage (improvement-strategies/dpo-query-rewrite/outputs/qwen3-8b-dpo-lora/final/; also published
+    on HuggingFace as Anni0401/qwen3-8b-dpo-query-rewrite-lora): only LoRA
     weights are saved there (adapter_config.json + adapter_model.safetensors, ~few hundred
     MB), not a full checkpoint. adapter_config.json pins
     ``base_model_name_or_path: "Qwen/Qwen3-8B"``, so this is not a standalone model -- it

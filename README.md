@@ -145,6 +145,18 @@ User: Who is the uploader of the third wallpaper?
 Planner：getWaifuDetails(image_id=778899)
 ```
 
+### DPO and LoRA Hyperparameter Sweeps
+
+The code, data, sweep definitions and per-run results of this section live in [`improvement-strategies/`](improvement-strategies/README.md); the trained adapters are on HuggingFace.
+
+We fine-tuned Qwen3-8B with Direct Preference Optimization (DPO) to rewrite user queries for improved tool retrieval. Because each training run requires a GPU, resource constraints made a joint exhaustive search impractical. We therefore used a two-stage search: first selecting DPO hyperparameters, then tuning LoRA while holding the selected DPO configuration fixed.
+
+The first, Bayesian sweep considered learning rates of $1\times10^{-6}$, $2\times10^{-6}$, $5\times10^{-6}$, and $1\times10^{-5}$; DPO $\beta$ values of 0.05, 0.1, and 0.2; and 1, 2, or 3 epochs. We maximized the final validation `eval_rewards/accuracies`. Scores ranged from 0.522 to 0.6473. Runs with learning rates of $1\times10^{-6}$ or $2\times10^{-6}$ scored between 0.52 and 0.59, close to the 0.5 chance level. Two configurations tied at 0.6473: learning rate $1\times10^{-5}$ with $\beta=0.1$ for two epochs, and the same learning rate with $\beta=0.2$ for three epochs. We selected the latter for the final model. Its score is 14.73 percentage points above chance.
+
+In the second, random-search sweep, we fixed learning rate $1\times10^{-5}$, $\beta=0.2$, and three epochs, and varied the LoRA rank $r\in\{8,16,32,64\}$, alpha $\in\{16,32,64,128\}$, and dropout $\in\{0,0.05,0.1\}$. The search space contained 48 combinations; 12 runs were completed under the available GPU budget. The best final validation score was 0.6607 with $r=8$, $\alpha=32$, and dropout 0.0. This is 1.34 percentage points above the first sweep's best score of 0.6473. The winning LoRA setting matches the default used in the first sweep, so this difference is an observed validation-score increase, not evidence that changing the LoRA parameters caused the gain.
+
+All runs used a target global batch size of 32 (per-device batch size 2, gradient accumulation over 16 steps, and one GPU), BF16 precision, and gradient checkpointing. The maximum sequence length was 1,024 tokens and the maximum prompt length was 768 tokens. `eval_rewards/accuracies` measures preference accuracy on the DPO validation set; it is not the end-task tool-selection accuracy.
+
 ## 📝 Citation
 
 If you find WildToolBench useful in your research, please consider citing our paper:

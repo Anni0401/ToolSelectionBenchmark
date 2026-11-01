@@ -152,11 +152,8 @@ sbatch runs/run_laguna_hierarchical.sh
 sbatch runs/run_laguna_toolreagt.sh
 sbatch runs/run_reranker_laguna.sh
 
-# Hosted API (SAIA) instead of local vLLM
-sbatch runs/run_in_context_saia.sh
-```
 
-The output location can be overridden through `RESULT_DIR`, e.g. `RESULT_DIR=result_v3_120B/reranker_context sbatch runs/run_reranker_2gpu.sh` (the default of this script). `EMBEDDING_MODEL` and `RERANKER_MODEL` can be overridden the same way.
+The output location can be overridden through `RESULT_DIR`, e.g. `RESULT_DIR=result_120B/reranker_context sbatch runs/run_reranker_2gpu.sh` (the default of this script). `EMBEDDING_MODEL` and `RERANKER_MODEL` can be overridden the same way.
 
 ### The invocation inside the scripts
 
@@ -172,13 +169,13 @@ python -m wtb.model_handler.api_inference.langgraph_app &
 export LANGGRAPH_RESULT_DIR=result_v3_120B/reranker_context
 python -u -m wtb.openfunctions_evaluation \
     --model=langgraph \
-    --result-dir result_v3_120B/reranker_context \
+    --result-dir result_120B/reranker_context \
     --num-threads 1
 
 # 3. Scoring (not part of the SLURM scripts; run after the job finished)
 python -u -m wtb.eval_runner \
     --model=langgraph \
-    --result-dir result_v3_120B/reranker_context \
+    --result-dir result_120B/reranker_context \
     --score-dir score/120B_reranker_context
 ```
 
